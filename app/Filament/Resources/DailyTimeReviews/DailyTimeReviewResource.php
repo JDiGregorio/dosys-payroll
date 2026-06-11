@@ -1,0 +1,265 @@
+<?php
+
+namespace App\Filament\Resources\DailyTimeReviews;
+
+use App\Filament\Resources\DailyTimeReviews\Pages\CreateDailyTimeReview;
+use App\Filament\Resources\DailyTimeReviews\Pages\EditDailyTimeReview;
+use App\Filament\Resources\DailyTimeReviews\Pages\ListDailyTimeReviews;
+use App\Models\DailyTimeReview;
+use App\Services\PayrollCalculationService;
+use App\Services\TimeParserService;
+use BackedEnum;
+use Filament\Actions\Action;
+use Filament\Actions\EditAction;
+use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
+use Filament\Resources\Resource;
+use Filament\Schemas\Schema;
+use Filament\Support\Icons\Heroicon;
+use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Filters\SelectFilter;
+use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+
+class DailyTimeReviewResource extends Resource
+{
+    protected static ?string $model = DailyTimeReview::class;
+
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedClipboardDocumentCheck;
+
+    protected static ?string $navigationLabel = 'Revisión diaria';
+
+    protected static ?string $modelLabel = 'revisión diaria';
+
+    protected static ?string $pluralModelLabel = 'revisión diaria';
+
+    protected static string|\UnitEnum|null $navigationGroup = 'Planilla';
+
+    public static function shouldRegisterNavigation(): bool
+    {
+        return false;
+    }
+
+    public static function getEloquentQuery(): Builder
+    {
+        $query = parent::getEloquentQuery()->with(['employee.campaign', 'employee.team', 'payrollPeriod']);
+        $user = auth()->user();
+
+        if ($user?->isSupervisor()) {
+            $query->whereHas('employee', fn (Builder $query) => $query->where('supervisor_user_id', $user->id));
+        }
+
+        return $query;
+    }
+
+    public static function canViewAny(): bool
+    {
+        return (bool) auth()->user()?->active;
+    }
+
+    public static function canCreate(): bool
+    {
+        return false;
+    }
+
+    public static function canEdit(Model $record): bool
+    {
+        $user = auth()->user();
+
+        return $user?->isRrhh()
+            || ($user?->isSupervisor() && $record->employee?->supervisor_user_id === $user->id && $record->payrollPeriod?->status !== 'cerrado');
+    }
+
+    public static function canDelete(Model $record): bool
+    {
+        return false;
+    }
+
+    public static function canDeleteAny(): bool
+    {
+        return false;
+    }
+
+    public static function form(Schema $schema): Schema
+    {
+        return $schema->components([
+            Select::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name')->required()->disabled(),
+            Select::make('employee_id')->label('Empleado')->relationship('employee', 'name')->searchable()->preload()->required()->disabled(),
+            DatePicker::make('date')->label('Fecha')->required()->disabled(),
+            TextInput::make('expected_hours')->label('Horas normales esperadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->expected_seconds) : '0:00')),
+            TextInput::make('assigned_overtime_hours')->label('Hora extra asignada del día')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->assigned_overtime_seconds) : '0:00')),
+            TextInput::make('required_hours')->label('Total requerido')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute(self::requiredSeconds($record)) : '0:00')),
+            TextInput::make('hubstaff_total_hours')->label('Total horas Hubstaff')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->hubstaff_total_seconds) : '0:00')),
+            TextInput::make('hubstaff_idle_hours')->label('Idle en horas')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->hubstaff_idle_seconds) : '0:00')),
+            TextInput::make('lost_time_hours')->label('Tiempo no trabajado')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute(self::lostTimeSeconds($record)) : '0:00')),
+            TextInput::make('justified_lost_time_hours')->label('Tiempo justificado')->helperText('Formato HH:MM. Solo restaura tiempo faltante de la jornada normal; la hora extra se paga si fue trabajada.')->placeholder('00:00')->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->justified_absence_seconds) : '0:00')),
+            Toggle::make('paid_day_off')->label('Día libre (OFF)')->helperText('Marca este día cuando no hubo registro porque era día libre y debe pagarse completo.')->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record)),
+            Toggle::make('absence_justified')->label('Ausencia justificada')->helperText('Marca si no hubo registro, pero el día debe pagarse por permiso o constancia.')->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record))->afterStateHydrated(fn (Toggle $component, ?DailyTimeReview $record) => $component->state($record ? self::isFullyJustifiedAbsence($record) : false)),
+            Textarea::make('supervisor_comment')->label('Comentario supervisor')->columnSpanFull(),
+            Textarea::make('rrhh_comment')->label('Comentario RRHH')->visible(fn () => auth()->user()?->isRrhh())->columnSpanFull(),
+        ]);
+    }
+
+    public static function table(Table $table): Table
+    {
+        return $table
+            ->columns([
+                TextColumn::make('payrollPeriod.name')->label('Período')->sortable(),
+                TextColumn::make('date')->label('Fecha')->date()->sortable(),
+                TextColumn::make('employee.name')->label('Empleado')->searchable()->sortable(),
+                TextColumn::make('employee.campaign.name')->label('Campaña')->toggleable(),
+                TextColumn::make('employee.team.name')->label('Team')->toggleable(),
+                self::hoursColumn('expected_seconds', 'Horas normales'),
+                self::hoursColumn('assigned_overtime_seconds', 'Extra asignada'),
+                self::hoursColumn('hubstaff_total_seconds', 'Horas Hubstaff'),
+                self::hoursColumn('hubstaff_idle_seconds', 'Idle reportado'),
+                self::hoursColumn('justified_idle_seconds', 'Idle justificado'),
+                self::hoursColumn('justified_absence_seconds', 'Ausencia justificada'),
+                self::hoursColumn('payable_seconds', 'Horas pagables'),
+                self::hoursColumn('difference_seconds', 'Diferencia'),
+                TextColumn::make('status')->label('Estado')->badge()->formatStateUsing(fn (string $state) => self::statusOptions()[$state] ?? $state),
+                TextColumn::make('supervisor_comment')->label('Comentario supervisor')->limit(30)->toggleable(),
+                TextColumn::make('rrhh_comment')->label('Comentario RRHH')->limit(30)->toggleable(),
+            ])
+            ->filters([
+                SelectFilter::make('payroll_period_id')->relationship('payrollPeriod', 'name')->label('Período'),
+                SelectFilter::make('status')->label('Estado')->options(self::statusOptions()),
+            ])
+            ->recordActions([
+                EditAction::make()
+                    ->label('Editar revisión')
+                    ->mutateRecordDataUsing(fn (array $data, DailyTimeReview $record): array => $data + self::hourStates($record))
+                    ->mutateFormDataUsing(fn (array $data, DailyTimeReview $record): array => self::secondsFromHourStates($data, $record))
+                    ->after(fn (DailyTimeReview $record, PayrollCalculationService $service) => self::recalculateReviewAndPayroll($record, $service)),
+                Action::make('reviewed')
+                    ->label('Marcar aplicado')
+                    ->icon('heroicon-o-check')
+                    ->action(function (DailyTimeReview $record, PayrollCalculationService $service): void {
+                        $record->update(['status' => 'revisado_supervisor', 'reviewed_by' => auth()->id()]);
+                        self::recalculateReviewAndPayroll($record, $service);
+                    }),
+                Action::make('paidDayOff')
+                    ->label('Marcar off pagado')
+                    ->icon('heroicon-o-calendar-days')
+                    ->visible(fn (DailyTimeReview $record) => ! $record->paid_day_off)
+                    ->action(function (DailyTimeReview $record, PayrollCalculationService $service): void {
+                        $record->update([
+                            'paid_day_off' => true,
+                            'status' => 'revisado_supervisor',
+                            'reviewed_by' => auth()->id(),
+                        ]);
+                        self::recalculateReviewAndPayroll($record, $service);
+                    }),
+                Action::make('recalculate')
+                    ->label('Actualizar cálculo')
+                    ->icon('heroicon-o-arrow-path')
+                    ->action(fn (DailyTimeReview $record, PayrollCalculationService $service) => self::recalculateReviewAndPayroll($record, $service)),
+            ]);
+    }
+
+    private static function hoursColumn(string $name, string $label): TextColumn
+    {
+        return TextColumn::make($name)
+            ->label($label)
+            ->state(fn (DailyTimeReview $record) => app(TimeParserService::class)->secondsToDecimalHours($record->{$name}))
+            ->alignRight();
+    }
+
+    public static function hourStates(DailyTimeReview $record): array
+    {
+        $parser = app(TimeParserService::class);
+
+        return [
+            'justified_lost_time_hours' => $parser->secondsToHourMinute($record->justified_absence_seconds),
+            'absence_justified' => self::isFullyJustifiedAbsence($record),
+        ];
+    }
+
+    public static function secondsFromHourStates(array $data, DailyTimeReview $record): array
+    {
+        $parser = app(TimeParserService::class);
+
+        if (self::hasHubstaffTime($record)) {
+            $normalMissingSeconds = self::normalMissingSeconds($record);
+            $justifiedSeconds = min($parser->parseToSeconds($data['justified_lost_time_hours'] ?? 0), $normalMissingSeconds);
+
+            $data['paid_day_off'] = false;
+            $data['justified_idle_seconds'] = 0;
+            $data['justified_absence_seconds'] = $justifiedSeconds;
+            $data['unjustified_idle_seconds'] = (int) $record->hubstaff_idle_seconds;
+            $data['unjustified_absence_seconds'] = max($normalMissingSeconds - $justifiedSeconds, 0);
+        } else {
+            $isOff = (bool) ($data['paid_day_off'] ?? false);
+            $isJustifiedAbsence = (bool) ($data['absence_justified'] ?? false);
+
+            $data['justified_idle_seconds'] = 0;
+            $data['unjustified_idle_seconds'] = 0;
+            $data['justified_absence_seconds'] = $isOff ? 0 : ($isJustifiedAbsence ? $record->expected_seconds : 0);
+            $data['unjustified_absence_seconds'] = $isOff || $isJustifiedAbsence ? 0 : $record->expected_seconds;
+        }
+
+        $data['approved_overtime_seconds'] = 0;
+        $data['overtime_rate_type_id'] = null;
+        $data['status'] = 'revisado_supervisor';
+
+        unset($data['justified_lost_time_hours'], $data['absence_justified']);
+
+        return $data;
+    }
+
+    private static function hasHubstaffTime(?DailyTimeReview $record): bool
+    {
+        return (int) ($record?->hubstaff_total_seconds ?? 0) > 0;
+    }
+
+    private static function lostTimeSeconds(DailyTimeReview $record): int
+    {
+        return max(self::requiredSeconds($record) - (int) $record->hubstaff_total_seconds, 0);
+    }
+
+    private static function requiredSeconds(DailyTimeReview $record): int
+    {
+        return (int) $record->expected_seconds + (int) $record->assigned_overtime_seconds;
+    }
+
+    private static function normalMissingSeconds(DailyTimeReview $record): int
+    {
+        return max((int) $record->expected_seconds - (int) $record->hubstaff_total_seconds, 0);
+    }
+
+    private static function isFullyJustifiedAbsence(DailyTimeReview $record): bool
+    {
+        return ! self::hasHubstaffTime($record)
+            && ! $record->paid_day_off
+            && (int) $record->expected_seconds > 0
+            && (int) $record->justified_absence_seconds >= (int) $record->expected_seconds;
+    }
+
+    public static function statusOptions(): array
+    {
+        return [
+            'pendiente' => 'Pendiente',
+            'revisado_supervisor' => 'Aplicado',
+            'aprobado_rrhh' => 'Aplicado',
+        ];
+    }
+
+    private static function recalculateReviewAndPayroll(DailyTimeReview $record, PayrollCalculationService $service): void
+    {
+        $service->recalculateDailyReview($record);
+        $service->recalculateEmployeePayrollResult($record->payrollPeriod, $record->employee);
+    }
+
+    public static function getPages(): array
+    {
+        return [
+            'index' => ListDailyTimeReviews::route('/'),
+            'create' => CreateDailyTimeReview::route('/create'),
+            'edit' => EditDailyTimeReview::route('/{record}/edit'),
+        ];
+    }
+}
