@@ -7,6 +7,7 @@ use App\Models\Employee;
 use App\Models\PayrollPeriod;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Maatwebsite\Excel\Facades\Excel;
+use RuntimeException;
 use Tests\TestCase;
 
 class HubstaffImportTest extends TestCase
@@ -60,5 +61,28 @@ class HubstaffImportTest extends TestCase
             'hubstaff_member' => 'Unknown Person',
             'employee_id' => null,
         ]);
+    }
+
+    public function test_it_rejects_files_with_dates_outside_the_selected_period(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'May 2026',
+            'starts_at' => '2026-05-01',
+            'ends_at' => '2026-05-15',
+        ]);
+        $path = storage_path('app/testing-hubstaff-wrong-period.csv');
+        file_put_contents($path, implode("\n", [
+            'Date,Member,Project,Team,Regular hours,Total hours,Activity %,Idle (%),Idle (hr)',
+            '2026-06-01,Ana Hubstaff,Operations,Team A,08:00:00,08:00:00,80,10,00:30:00',
+        ]));
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('fuera del período');
+
+        try {
+            Excel::import(new HubstaffTimeEntriesImport($period), $path);
+        } finally {
+            $this->assertDatabaseCount('hubstaff_time_entries', 0);
+        }
     }
 }

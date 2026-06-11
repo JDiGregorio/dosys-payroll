@@ -107,8 +107,6 @@ class PayrollPeriodResource extends Resource
                 TextColumn::make('unmapped')->label('Sin mapeo')->state(fn (PayrollPeriod $record) => HubstaffTimeEntry::query()->where('payroll_period_id', $record->id)->whereNull('employee_id')->distinct('hubstaff_member')->count('hubstaff_member')),
             ])
             ->recordActions([
-                self::importHubstaffAction(),
-                self::recalculatePayrollAction(),
                 self::exportPayrollAction(),
                 self::closePeriodAction(),
                 EditAction::make()->label('Editar'),
@@ -120,11 +118,17 @@ class PayrollPeriodResource extends Resource
             ]);
     }
 
-    private static function importHubstaffAction(): Action
+    public static function importHubstaffAction(): Action
     {
         return Action::make('importHubstaff')
-            ->label('Importar CSV de Hubstaff')
+            ->label(fn (PayrollPeriod $record) => $record->hubstaffTimeEntries()->exists()
+                ? 'Reemplazar CSV de Hubstaff'
+                : 'Importar CSV de Hubstaff')
             ->icon('heroicon-o-arrow-up-tray')
+            ->requiresConfirmation()
+            ->modalDescription(fn (PayrollPeriod $record) => $record->hubstaffTimeEntries()->exists()
+                ? 'Se reemplazarán los registros Hubstaff y las revisiones diarias de este período. Bonos, deducciones y horas extra adicionales se conservarán.'
+                : 'El archivo debe contener únicamente fechas dentro del período seleccionado.')
             ->form([
                 FileUpload::make('file')->label('Archivo CSV')->required()->acceptedFileTypes(['text/csv', 'text/plain']),
             ])
@@ -137,19 +141,29 @@ class PayrollPeriodResource extends Resource
                 ]);
 
                 try {
-                    Excel::import(new HubstaffTimeEntriesImport($record, $import), Storage::disk('local')->path($data['file']));
-                    $service->generateDailyReviews($record);
-                    $service->recalculatePayrollResults($record);
-                    $record->update(['status' => 'en_revision']);
-                    Notification::make()->title('CSV importado, revisión diaria generada y planilla calculada')->success()->send();
+                    DB::transaction(function () use ($record, $data, $import, $service): void {
+                        $record->hubstaffTimeEntries()->delete();
+                        $record->dailyTimeReviews()->delete();
+                        $record->payrollResults()->delete();
+
+                        Excel::import(
+                            new HubstaffTimeEntriesImport($record, $import),
+                            Storage::disk('local')->path($data['file']),
+                        );
+
+                        $service->generateDailyReviews($record);
+                        $service->recalculatePayrollResults($record);
+                        $record->update(['status' => 'en_revision']);
+                    });
+
+                    Notification::make()->title('CSV importado, revisión diaria generada y planilla recalculada')->success()->send();
                 } catch (Throwable $exception) {
                     $import->update(['status' => 'failed', 'error_message' => $exception->getMessage()]);
                     throw $exception;
                 }
             })
             ->visible(fn (PayrollPeriod $record) => (auth()->user()?->isRrhh() ?? false)
-                && $record->status !== 'cerrado'
-                && ! HubstaffTimeEntry::query()->where('payroll_period_id', $record->id)->exists());
+                && $record->status !== 'cerrado');
     }
 
     private static function generateReviewsAction(): Action
@@ -166,7 +180,7 @@ class PayrollPeriodResource extends Resource
             ->visible(fn () => auth()->user()?->isRrhh());
     }
 
-    private static function recalculatePayrollAction(): Action
+    public static function recalculatePayrollAction(): Action
     {
         return Action::make('recalculatePayroll')
             ->label('Calcular planilla')

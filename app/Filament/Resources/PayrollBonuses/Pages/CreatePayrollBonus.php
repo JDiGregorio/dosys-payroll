@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\PayrollBonuses\Pages;
 
 use App\Filament\Resources\PayrollBonuses\PayrollBonusResource;
-use App\Services\PayrollCalculationService;
 use Filament\Resources\Pages\CreateRecord;
 
 class CreatePayrollBonus extends CreateRecord
@@ -16,10 +15,5 @@ class CreatePayrollBonus extends CreateRecord
         $data['status'] = 'aprobado';
 
         return PayrollBonusResource::normalizeScopeData($data);
-    }
-
-    protected function afterCreate(): void
-    {
-        app(PayrollCalculationService::class)->recalculatePayrollResults($this->record->payrollPeriod);
     }
 }

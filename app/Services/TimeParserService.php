@@ -43,10 +43,24 @@ class TimeParserService
     public function secondsToHourMinute(int $seconds): string
     {
         $sign = $seconds < 0 ? '-' : '';
-        $seconds = abs($seconds);
+        $seconds = (int) round(abs($seconds) / 60) * 60;
         $hours = intdiv($seconds, 3600);
         $minutes = intdiv($seconds % 3600, 60);
 
         return sprintf('%s%d:%02d', $sign, $hours, $minutes);
+    }
+
+    public function secondsToHourMinuteSecond(int $seconds): string
+    {
+        $sign = $seconds < 0 ? '-' : '';
+        $seconds = abs($seconds);
+
+        return sprintf(
+            '%s%d:%02d:%02d',
+            $sign,
+            intdiv($seconds, 3600),
+            intdiv($seconds % 3600, 60),
+            $seconds % 60,
+        );
     }
 }

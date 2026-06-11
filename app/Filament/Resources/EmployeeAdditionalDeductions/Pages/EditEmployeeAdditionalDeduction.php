@@ -16,9 +16,4 @@ class EditEmployeeAdditionalDeduction extends EditRecord
             DeleteAction::make()->label('Eliminar'),
         ];
     }
-
-    protected function afterSave(): void
-    {
-        EmployeeAdditionalDeductionResource::recalculatePeriod($this->record);
-    }
 }

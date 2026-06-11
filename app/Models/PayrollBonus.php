@@ -2,12 +2,27 @@
 
 namespace App\Models;
 
+use App\Services\PayrollCalculationService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class PayrollBonus extends Model
 {
     protected $guarded = [];
+
+    protected static function booted(): void
+    {
+        $recalculate = function (PayrollBonus $bonus): void {
+            $period = PayrollPeriod::query()->find($bonus->payroll_period_id);
+
+            if ($period) {
+                app(PayrollCalculationService::class)->recalculatePayrollResults($period);
+            }
+        };
+
+        static::saved($recalculate);
+        static::deleted($recalculate);
+    }
 
     protected function casts(): array
     {

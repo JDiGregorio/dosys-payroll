@@ -185,12 +185,10 @@ class DailyReviewCalendar extends Page
 
     private function employeesForPeriod(?int $periodId): Builder
     {
-        $query = Employee::query()->where('active', true)->orderBy('name');
-        $user = auth()->user();
-
-        if ($user?->isSupervisor()) {
-            $query->where('supervisor_user_id', $user->id);
-        }
+        $query = Employee::query()
+            ->visibleTo(auth()->user())
+            ->where('active', true)
+            ->orderBy('name');
 
         if ($periodId) {
             $query->whereHas('dailyTimeReviews', fn ($query) => $query->where('payroll_period_id', $periodId));

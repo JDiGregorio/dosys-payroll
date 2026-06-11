@@ -23,6 +23,14 @@ class PayrollCalculationService
     public function generateDailyReviews(PayrollPeriod $period): void
     {
         DB::transaction(function () use ($period): void {
+            DailyTimeReview::query()
+                ->where('payroll_period_id', $period->id)
+                ->where(function ($query) use ($period): void {
+                    $query->whereDate('date', '<', $period->starts_at)
+                        ->orWhereDate('date', '>', $period->ends_at);
+                })
+                ->delete();
+
             $entriesByEmployeeDate = HubstaffTimeEntry::query()
                 ->with('employee')
                 ->where('payroll_period_id', $period->id)
@@ -70,8 +78,10 @@ class PayrollCalculationService
                         $review->justified_idle_seconds = 0;
                         $review->unjustified_idle_seconds = $idleSeconds;
                         $review->justified_absence_seconds = 0;
-                        $review->unjustified_absence_seconds = max($expectedSeconds - $hubstaffTotalSeconds, 0);
+                        $review->unjustified_absence_seconds = max($expectedSeconds + $assignedOvertimeSeconds - $hubstaffTotalSeconds, 0);
                         $review->approved_overtime_seconds = 0;
+                        $review->assigned_overtime_fulfilled = $assignedOvertimeSeconds > 0
+                            && $hubstaffTotalSeconds > $expectedSeconds;
                         $review->paid_day_off = false;
                     }
 
@@ -113,21 +123,20 @@ class PayrollCalculationService
             $review->unjustified_idle_seconds = max($review->hubstaff_idle_seconds - $review->justified_idle_seconds, 0);
         }
 
-        $normalMissingSeconds = $this->normalMissingSeconds($review);
-        $review->justified_absence_seconds = min((int) $review->justified_absence_seconds, $normalMissingSeconds);
-        $review->unjustified_absence_seconds = max($normalMissingSeconds - (int) $review->justified_absence_seconds, 0);
-
         if ($review->paid_day_off) {
+            $review->justified_absence_seconds = 0;
+            $review->unjustified_absence_seconds = 0;
             $review->payable_seconds = $review->expected_seconds;
         } else {
-            $review->payable_seconds = min(
-                max((int) $review->hubstaff_total_seconds + (int) $review->justified_absence_seconds, 0),
-                $this->requiredSeconds($review),
-            );
+            $totalMissingSeconds = $this->totalMissingSeconds($review);
+            $review->justified_absence_seconds = min((int) $review->justified_absence_seconds, $totalMissingSeconds);
+            $review->unjustified_absence_seconds = max($totalMissingSeconds - (int) $review->justified_absence_seconds, 0);
+            $review->payable_seconds = $this->regularPayableSeconds($review)
+                + $this->paidAssignedOvertimeSeconds($review);
         }
 
         $review->difference_seconds = $review->hubstaff_total_seconds - $this->requiredSeconds($review);
-        $review->possible_overtime_seconds = min(max($review->payable_seconds - $review->expected_seconds, 0), (int) $review->assigned_overtime_seconds);
+        $review->possible_overtime_seconds = $this->paidAssignedOvertimeSeconds($review);
 
         if ($review->approved_overtime_seconds > $review->possible_overtime_seconds) {
             $review->approved_overtime_seconds = $review->possible_overtime_seconds;
@@ -148,18 +157,28 @@ class PayrollCalculationService
             return;
         }
 
-        $payableSeconds = (int) $reviews->sum('payable_seconds');
+        $regularPayableSeconds = (int) $reviews->sum(fn (DailyTimeReview $review): int => $this->regularPayableSeconds($review));
+        $preassignedOvertimeSeconds = (int) $reviews->sum(fn (DailyTimeReview $review): int => $this->paidAssignedOvertimeSeconds($review));
+        $payableSeconds = $regularPayableSeconds + $preassignedOvertimeSeconds;
         $hourlyRate = $this->employeeHourlyRate($employee);
         $monthlySalary = $this->employeeMonthlySalary($employee, $hourlyRate);
         $biweeklySalary = $monthlySalary / 2;
         $dailyRate = $monthlySalary / 30;
         $fallbackOvertimeRate = (float) $employee->overtime_hourly_rate ?: $hourlyRate * 1.25;
-        $preassignedOvertimeSeconds = (int) $reviews->sum('possible_overtime_seconds');
         $preassignedOvertimeAmount = ($preassignedOvertimeSeconds / 3600) * $fallbackOvertimeRate;
 
-        $manualOvertimeSeconds = $this->manualOvertimeSeconds($period, $employee);
-        $manualOvertimeAmount = $this->manualOvertimeAmount($period, $employee);
-        $overtimeAmount = $preassignedOvertimeAmount + $manualOvertimeAmount;
+        $unapprovedExcessSeconds = (int) $reviews->sum(
+            fn (DailyTimeReview $review): int => max(
+                (int) $review->hubstaff_total_seconds - $this->requiredSeconds($review),
+                0,
+            ),
+        );
+        [$manualOvertimeSeconds, $manualOvertimeAmount] = $this->manualOvertime(
+            $period,
+            $employee,
+            $unapprovedExcessSeconds,
+        );
+        $overtimeAmount = round($preassignedOvertimeAmount + $manualOvertimeAmount, 2);
 
         $qaBonus = $this->bonusService->amountByType($period, $employee, ['qa']);
         $productivityBonus = $this->bonusService->amountByType($period, $employee, ['productivity']);
@@ -167,12 +186,19 @@ class PayrollCalculationService
         $referredBonus = $this->bonusService->amountByType($period, $employee, ['referred']);
         $adjustmentBonus = $this->bonusService->amountByType($period, $employee, ['adjustment']);
         $extraBonuses = $this->bonusService->amountByType($period, $employee, ['manual', 'other']);
-        $internetSubsidy = $employee->location === 'remote' ? (float) $employee->internet_subsidy_amount : 0.0;
+        $internetSubsidy = ($employee->location === 'remote' ? (float) $employee->internet_subsidy_amount : 0.0)
+            + $this->bonusService->amountByType($period, $employee, ['internet_subsidy']);
         $payrollCompensation = 0.0;
-        $extrasTotal = $overtimeAmount + $internetSubsidy + $qaBonus + $productivityBonus + $timeManagementBonus + $extraBonuses + $referredBonus + $adjustmentBonus + $payrollCompensation;
+        $extrasTotal = round($overtimeAmount + $internetSubsidy + $qaBonus + $productivityBonus + $timeManagementBonus + $extraBonuses + $referredBonus + $adjustmentBonus + $payrollCompensation, 2);
         $workedDays = $this->workedDays($reviews);
-        $workedSalary = $workedDays * $dailyRate;
-        $grossAmount = $workedSalary + $extrasTotal;
+        $workedSalary = round(($regularPayableSeconds / 3600) * $hourlyRate, 2);
+        $regularLostSeconds = (int) $reviews->sum('unjustified_absence_seconds');
+        $overtimeLostSeconds = 0;
+        $regularLostAmount = ($regularLostSeconds / 3600) * $hourlyRate;
+        $overtimeLostAmount = 0.0;
+        $lostTimeSeconds = $regularLostSeconds + $overtimeLostSeconds;
+        $lostTimeAmount = round($regularLostAmount + $overtimeLostAmount, 2);
+        $grossAmount = round($workedSalary + $extrasTotal, 2);
 
         $deductions = $this->deductionService->approvedForEmployee($period, $employee);
         $deductionAmountByCode = fn (string $code): float => (float) $deductions
@@ -183,7 +209,8 @@ class PayrollCalculationService
         $isr = $deductionAmountByCode('isr');
         $rap = $deductionAmountByCode('rap');
         $vouchers = $deductionAmountByCode('vouchers');
-        $totalDeductions = (float) $deductions->sum('amount');
+        $totalDeductions = round((float) $deductions->sum('amount'), 2);
+        $netAmount = round($grossAmount - $totalDeductions, 2);
 
         PayrollResult::query()->updateOrCreate(
             [
@@ -204,29 +231,35 @@ class PayrollCalculationService
                 'unjustified_idle_seconds' => (int) $reviews->sum('unjustified_idle_seconds'),
                 'justified_absence_seconds' => (int) $reviews->sum('justified_absence_seconds'),
                 'unjustified_absence_seconds' => (int) $reviews->sum('unjustified_absence_seconds'),
+                'regular_lost_seconds' => $regularLostSeconds,
+                'overtime_lost_seconds' => $overtimeLostSeconds,
+                'lost_time_seconds' => $lostTimeSeconds,
                 'payable_seconds' => $payableSeconds,
-                'worked_salary_amount' => round($workedSalary, 2),
-                'base_salary_amount' => round($workedSalary, 2),
+                'worked_salary_amount' => $workedSalary,
+                'regular_lost_amount' => round($regularLostAmount, 2),
+                'overtime_lost_amount' => round($overtimeLostAmount, 2),
+                'lost_time_amount' => $lostTimeAmount,
+                'base_salary_amount' => $workedSalary,
                 'extra_bonuses_amount' => round($extraBonuses, 2),
                 'referred_bonus_amount' => round($referredBonus, 2),
                 'adjustment_bonus_amount' => round($adjustmentBonus, 2),
                 'bonuses_amount' => round($extraBonuses + $referredBonus + $adjustmentBonus + $qaBonus + $productivityBonus + $timeManagementBonus + $internetSubsidy, 2),
                 'overtime_seconds' => $preassignedOvertimeSeconds + $manualOvertimeSeconds,
-                'overtime_amount' => round($overtimeAmount, 2),
+                'overtime_amount' => $overtimeAmount,
                 'internet_subsidy_amount' => round($internetSubsidy, 2),
                 'qa_bonus_amount' => round($qaBonus, 2),
                 'productivity_bonus_amount' => round($productivityBonus, 2),
                 'time_management_bonus_amount' => round($timeManagementBonus, 2),
                 'payroll_compensation_amount' => round($payrollCompensation, 2),
-                'extras_total_amount' => round($extrasTotal, 2),
-                'gross_amount' => round($grossAmount, 2),
+                'extras_total_amount' => $extrasTotal,
+                'gross_amount' => $grossAmount,
                 'private_insurance_amount' => round($privateInsurance, 2),
                 'ihss_amount' => round($ihss, 2),
                 'isr_amount' => round($isr, 2),
                 'rap_amount' => round($rap, 2),
                 'vouchers_amount' => round($vouchers, 2),
-                'total_deductions_amount' => round($totalDeductions, 2),
-                'net_amount' => round($grossAmount - $totalDeductions, 2),
+                'total_deductions_amount' => $totalDeductions,
+                'net_amount' => $netAmount,
                 'status' => $period->status === 'aprobado' ? 'aprobado' : 'borrador',
             ],
         );
@@ -320,39 +353,86 @@ class PayrollCalculationService
         return (int) $review->expected_seconds + (int) $review->assigned_overtime_seconds;
     }
 
-    private function normalMissingSeconds(DailyTimeReview $review): int
+    private function totalMissingSeconds(DailyTimeReview $review): int
     {
-        return max((int) $review->expected_seconds - (int) $review->hubstaff_total_seconds, 0);
+        return max($this->requiredSeconds($review) - (int) $review->hubstaff_total_seconds, 0);
     }
 
-    private function manualOvertimeAmount(PayrollPeriod $period, Employee $employee): float
+    private function regularPayableSeconds(DailyTimeReview $review): int
     {
-        return (float) PayrollOvertimeAdjustment::query()
+        if ($review->paid_day_off) {
+            return (int) $review->expected_seconds;
+        }
+
+        $creditedSeconds = $this->creditedRequiredSeconds($review);
+
+        if (! $review->assigned_overtime_fulfilled) {
+            return min($creditedSeconds, (int) $review->expected_seconds);
+        }
+
+        return min(
+            max($creditedSeconds - $this->paidAssignedOvertimeSeconds($review), 0),
+            (int) $review->expected_seconds,
+        );
+    }
+
+    private function paidAssignedOvertimeSeconds(DailyTimeReview $review): int
+    {
+        if ($review->paid_day_off || ! $review->assigned_overtime_fulfilled) {
+            return 0;
+        }
+
+        return min(
+            (int) $review->assigned_overtime_seconds,
+            $this->creditedRequiredSeconds($review),
+        );
+    }
+
+    private function creditedRequiredSeconds(DailyTimeReview $review): int
+    {
+        return min(
+            (int) $review->hubstaff_total_seconds + (int) $review->justified_absence_seconds,
+            $this->requiredSeconds($review),
+        );
+    }
+
+    /**
+     * @return array{0: int, 1: float}
+     */
+    private function manualOvertime(PayrollPeriod $period, Employee $employee, int $availableSeconds): array
+    {
+        $adjustments = PayrollOvertimeAdjustment::query()
             ->where('payroll_period_id', $period->id)
             ->where('employee_id', $employee->id)
             ->where('active', true)
-            ->sum('amount');
-    }
+            ->orderBy('id')
+            ->get();
+        $paidSeconds = 0;
+        $paidAmount = 0.0;
 
-    private function manualOvertimeSeconds(PayrollPeriod $period, Employee $employee): int
-    {
-        $hours = (float) PayrollOvertimeAdjustment::query()
-            ->where('payroll_period_id', $period->id)
-            ->where('employee_id', $employee->id)
-            ->where('active', true)
-            ->sum('hours');
+        foreach ($adjustments as $adjustment) {
+            $adjustmentSeconds = max((int) round((float) $adjustment->hours * 3600), 0);
+            $applicableSeconds = min($adjustmentSeconds, max($availableSeconds - $paidSeconds, 0));
 
-        return (int) round($hours * 3600);
+            if ($applicableSeconds <= 0) {
+                break;
+            }
+
+            $paidSeconds += $applicableSeconds;
+            $paidAmount += ($applicableSeconds / 3600) * (float) $adjustment->hourly_rate;
+        }
+
+        return [$paidSeconds, $paidAmount];
     }
 
     private function workedDays(Collection $reviews): float
     {
         return (float) $reviews->sum(function (DailyTimeReview $review): float {
             if ($review->expected_seconds <= 0) {
-                return $review->payable_seconds > 0 ? 1.0 : 0.0;
+                return $this->regularPayableSeconds($review) > 0 ? 1.0 : 0.0;
             }
 
-            return min($review->payable_seconds / $review->expected_seconds, 1.0);
+            return min($this->regularPayableSeconds($review) / $review->expected_seconds, 1.0);
         });
     }
 }

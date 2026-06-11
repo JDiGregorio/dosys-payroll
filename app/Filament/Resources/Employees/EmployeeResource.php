@@ -49,14 +49,9 @@ class EmployeeResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        $query = parent::getEloquentQuery()->with(['campaign', 'team', 'department', 'workRole', 'tierLevel', 'scheduleType']);
-        $user = auth()->user();
-
-        if ($user?->isSupervisor()) {
-            $query->where('supervisor_user_id', $user->id);
-        }
-
-        return $query;
+        return parent::getEloquentQuery()
+            ->visibleTo(auth()->user())
+            ->with(['campaign', 'team', 'department', 'workRole', 'tierLevel', 'scheduleType']);
     }
 
     public static function canViewAny(): bool
@@ -87,6 +82,14 @@ class EmployeeResource extends Resource
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
+            TextInput::make('dni')
+                ->label('DNI')
+                ->maxLength(255)
+                ->unique(ignoreRecord: true),
+            TextInput::make('bank_account_number')
+                ->label('Número de cuenta')
+                ->maxLength(255)
+                ->unique(ignoreRecord: true),
             TextInput::make('name')->label('Nombre')->required()->maxLength(255),
             TextInput::make('hubstaff_name')
                 ->label('Nombre Hubstaff')
@@ -168,7 +171,6 @@ class EmployeeResource extends Resource
                 ->afterStateUpdated(fn (Get $get, Set $set) => self::syncCalculatedPayFields($get, $set))
                 ->rules([fn (Get $get): Closure => self::assignedOvertimeRule($get)]),
             TextInput::make('overtime_hourly_rate')->label('Valor hora extra')->helperText('Pago por hora x 1.25.')->numeric()->default(0)->readOnly(),
-            TextInput::make('monthly_overtime_amount')->label('Total horas extras mensual')->helperText('Horas extras x (pago por hora x 1.25) x (30/7).')->numeric()->default(0)->readOnly(),
             Toggle::make('can_work_overtime')->label('Puede hacer horas extra')->default(true),
             Select::make('location')->label('Ubicación')->options(['on_site' => 'Presencial', 'remote' => 'Remoto'])->default('on_site')->required(),
             TextInput::make('internet_subsidy_amount')->label('Subsidio de internet')->numeric()->default(0),
@@ -184,6 +186,8 @@ class EmployeeResource extends Resource
     {
         return $table
             ->columns([
+                TextColumn::make('dni')->label('DNI')->searchable()->toggleable(),
+                TextColumn::make('bank_account_number')->label('No. cuenta')->searchable()->toggleable(),
                 TextColumn::make('name')->label('Nombre')->searchable()->sortable(),
                 TextColumn::make('campaign.name')->label('Campaña')->sortable(),
                 TextColumn::make('team.name')->label('Team')->sortable(),
@@ -194,7 +198,6 @@ class EmployeeResource extends Resource
                 TextColumn::make('overtime_hours')->label('Horas extra asignadas')->numeric()->sortable(),
                 TextColumn::make('hourly_rate')->label('Pago por hora')->money('HNL')->sortable(),
                 TextColumn::make('overtime_hourly_rate')->label('Valor hora extra')->money('HNL')->toggleable(),
-                TextColumn::make('monthly_overtime_amount')->label('Total horas extras mensual')->money('HNL')->toggleable(),
                 IconColumn::make('active')->label('Activo')->boolean(),
             ])
             ->filters([
@@ -235,7 +238,6 @@ class EmployeeResource extends Resource
     {
         $hourlyRate = (float) ($data['hourly_rate'] ?? 0);
         $dailyHours = (float) ($data['daily_hours'] ?? 0);
-        $overtimeHours = (float) ($data['overtime_hours'] ?? 0);
         $monthlySalary = $dailyHours * $hourlyRate * 30;
         $overtimeHourlyRate = $hourlyRate * 1.25;
 
@@ -243,7 +245,7 @@ class EmployeeResource extends Resource
         $data['monthly_salary'] = round($monthlySalary, 2);
         $data['daily_rate'] = round($monthlySalary / 30, 4);
         $data['overtime_hourly_rate'] = round($overtimeHourlyRate, 4);
-        $data['monthly_overtime_amount'] = round($overtimeHours * $overtimeHourlyRate * (30 / 7), 2);
+        unset($data['monthly_overtime_amount']);
 
         if (self::isTierOne((int) ($data['tier_level_id'] ?? 0))) {
             $data['contract_type_id'] = self::trialContractTypeId();
@@ -257,14 +259,12 @@ class EmployeeResource extends Resource
         $hourlyRate = (float) ($get('hourly_rate') ?? 0);
         $monthlySalary = (float) ($get('daily_hours') ?? 0) * $hourlyRate * 30;
         $overtimeHourlyRate = $hourlyRate * 1.25;
-        $monthlyOvertimeAmount = (float) ($get('overtime_hours') ?? 0) * $overtimeHourlyRate * (30 / 7);
 
         $set('calendar_days', 30);
         $set('monthly_salary', round($monthlySalary, 2));
         $set('biweekly_salary', round($monthlySalary / 2, 2));
         $set('daily_rate', round($monthlySalary / 30, 4));
         $set('overtime_hourly_rate', round($overtimeHourlyRate, 4));
-        $set('monthly_overtime_amount', round($monthlyOvertimeAmount, 2));
     }
 
     private static function isTierOne(?int $tierLevelId): bool

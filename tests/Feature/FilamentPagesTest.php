@@ -3,12 +3,14 @@
 namespace Tests\Feature;
 
 use App\Filament\Pages\DailyReviewCalendar;
+use App\Filament\Resources\Campaigns\CampaignResource;
 use App\Filament\Resources\Employees\EmployeeResource;
 use App\Models\Campaign;
 use App\Models\ContractType;
 use App\Models\DailyTimeReview;
 use App\Models\Department;
 use App\Models\Employee;
+use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
 use App\Models\ScheduleType;
 use App\Models\Team;
@@ -131,7 +133,7 @@ class FilamentPagesTest extends TestCase
         $this->assertSame($trialContract->id, $data['contract_type_id']);
         $this->assertSame(2400.0, $data['monthly_salary']);
         $this->assertSame(12.5, $data['overtime_hourly_rate']);
-        $this->assertSame(214.29, $data['monthly_overtime_amount']);
+        $this->assertArrayNotHasKey('monthly_overtime_amount', $data);
     }
 
     public function test_daily_review_calendar_switches_selected_employee_reviews(): void
@@ -224,5 +226,167 @@ class FilamentPagesTest extends TestCase
             ->assertOk()
             ->assertSee('6:00 h')
             ->assertDontSee('8:00 h');
+    }
+
+    public function test_supervisor_only_sees_assigned_employees_and_cannot_access_configuration(): void
+    {
+        $supervisor = User::query()->create([
+            'name' => 'Supervisor',
+            'email' => 'supervisor-filter@example.com',
+            'password' => 'password',
+            'profile' => 'supervisor',
+            'active' => true,
+        ]);
+        $otherSupervisor = User::query()->create([
+            'name' => 'Other Supervisor',
+            'email' => 'other-supervisor@example.com',
+            'password' => 'password',
+            'profile' => 'supervisor',
+            'active' => true,
+        ]);
+
+        Employee::query()->create([
+            'name' => 'Empleado asignado',
+            'supervisor_user_id' => $supervisor->id,
+            'active' => true,
+        ]);
+        Employee::query()->create([
+            'name' => 'Empleado ajeno',
+            'supervisor_user_id' => $otherSupervisor->id,
+            'active' => true,
+        ]);
+
+        $this->actingAs($supervisor);
+
+        $this->get('/admin/employees')
+            ->assertOk()
+            ->assertSee('Empleado asignado')
+            ->assertDontSee('Empleado ajeno');
+
+        $this->get('/admin/campaigns')->assertForbidden();
+        $this->assertFalse(CampaignResource::shouldRegisterNavigation());
+    }
+
+    public function test_supervisor_daily_review_calendar_only_lists_assigned_employees(): void
+    {
+        $supervisor = User::query()->create([
+            'name' => 'Supervisor Calendar',
+            'email' => 'supervisor-calendar@example.com',
+            'password' => 'password',
+            'profile' => 'supervisor',
+            'active' => true,
+        ]);
+        $otherSupervisor = User::query()->create([
+            'name' => 'Other Calendar',
+            'email' => 'other-calendar@example.com',
+            'password' => 'password',
+            'profile' => 'supervisor',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Junio supervisión',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+        ]);
+        $assigned = Employee::query()->create([
+            'name' => 'Asignado Calendar',
+            'supervisor_user_id' => $supervisor->id,
+            'active' => true,
+        ]);
+        $unassigned = Employee::query()->create([
+            'name' => 'No asignado Calendar',
+            'supervisor_user_id' => $otherSupervisor->id,
+            'active' => true,
+        ]);
+
+        foreach ([$assigned, $unassigned] as $employee) {
+            DailyTimeReview::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'date' => '2026-06-01',
+                'expected_seconds' => 28800,
+                'hubstaff_total_seconds' => 28800,
+                'payable_seconds' => 28800,
+            ]);
+        }
+
+        $this->actingAs($supervisor);
+
+        $this->get('/admin/daily-review-calendar')
+            ->assertOk()
+            ->assertSee('Asignado Calendar')
+            ->assertDontSee('No asignado Calendar');
+    }
+
+    public function test_payroll_period_manual_actions_are_shown_on_edit_not_index(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Actions',
+            'email' => 'rrhh-actions@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Período acciones',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+        ]);
+
+        $this->actingAs($user);
+
+        $this->get('/admin/payroll-periods')
+            ->assertOk()
+            ->assertDontSee('Importar CSV de Hubstaff')
+            ->assertDontSee('Calcular planilla');
+
+        $this->get("/admin/payroll-periods/{$period->id}/edit")
+            ->assertOk()
+            ->assertSee('Importar CSV de Hubstaff')
+            ->assertSee('Calcular planilla');
+    }
+
+    public function test_daily_review_edit_shows_hubstaff_detail_tab(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Detail',
+            'email' => 'rrhh-detail@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Detalle Hubstaff',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+        ]);
+        $employee = Employee::query()->create(['name' => 'Empleado Detail', 'active' => true]);
+        $review = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-06-03',
+            'expected_seconds' => 28800,
+            'hubstaff_total_seconds' => 27000,
+            'payable_seconds' => 27000,
+        ]);
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'hubstaff_member' => $employee->name,
+            'date' => '2026-06-03',
+            'project' => 'Operations Detail',
+            'team' => 'Team Detail',
+            'regular_seconds' => 27000,
+            'total_seconds' => 27000,
+            'idle_seconds' => 1800,
+        ]);
+
+        $this->actingAs($user);
+
+        $this->get("/admin/daily-time-reviews/{$review->id}/edit")
+            ->assertOk()
+            ->assertSee('Registros de Hubstaff')
+            ->assertSee('Operations Detail')
+            ->assertSee('7:30:00');
     }
 }

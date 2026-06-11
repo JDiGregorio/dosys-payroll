@@ -7,7 +7,6 @@ use App\Filament\Resources\PayrollOvertimeAdjustments\Pages\EditPayrollOvertimeA
 use App\Filament\Resources\PayrollOvertimeAdjustments\Pages\ListPayrollOvertimeAdjustments;
 use App\Models\Employee;
 use App\Models\PayrollOvertimeAdjustment;
-use App\Services\PayrollCalculationService;
 use BackedEnum;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -24,6 +23,9 @@ use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Validation\ValidationException;
 
 class PayrollOvertimeAdjustmentResource extends Resource
 {
@@ -41,18 +43,64 @@ class PayrollOvertimeAdjustmentResource extends Resource
 
     protected static ?int $navigationSort = 55;
 
+    public static function getEloquentQuery(): Builder
+    {
+        $query = parent::getEloquentQuery()->with(['employee', 'payrollPeriod']);
+
+        if (auth()->user()?->isSupervisor()) {
+            $query->whereHas('employee', fn (Builder $query) => $query->visibleTo(auth()->user()));
+        }
+
+        return $query;
+    }
+
+    public static function canViewAny(): bool
+    {
+        return (bool) auth()->user()?->active;
+    }
+
+    public static function canCreate(): bool
+    {
+        return (bool) auth()->user()?->active;
+    }
+
+    public static function canEdit(Model $record): bool
+    {
+        $user = auth()->user();
+
+        return $user?->isRrhh()
+            || ($user?->isSupervisor()
+                && $record->employee?->supervisor_user_id === $user->id
+                && $record->payrollPeriod?->status !== 'cerrado');
+    }
+
+    public static function canDelete(Model $record): bool
+    {
+        return self::canEdit($record);
+    }
+
+    public static function canDeleteAny(): bool
+    {
+        return (bool) auth()->user()?->active;
+    }
+
     public static function shouldRegisterNavigation(): bool
     {
-        return auth()->user()?->isRrhh() ?? false;
+        return (bool) auth()->user()?->active;
     }
 
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            Select::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name')->searchable()->preload()->required(),
+            Select::make('payroll_period_id')
+                ->label('Período')
+                ->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->where('status', '!=', 'cerrado'))
+                ->searchable()
+                ->preload()
+                ->required(),
             Select::make('employee_id')
                 ->label('Empleado')
-                ->relationship('employee', 'name')
+                ->relationship('employee', 'name', modifyQueryUsing: fn (Builder $query) => $query->visibleTo(auth()->user()))
                 ->searchable()
                 ->preload()
                 ->live()
@@ -66,6 +114,7 @@ class PayrollOvertimeAdjustmentResource extends Resource
                 ->required(),
             TextInput::make('hours')
                 ->label('Horas adicionales')
+                ->helperText('Solo se pagarán hasta el excedente real registrado en Hubstaff sobre las horas normales y preasignadas.')
                 ->numeric()
                 ->minValue(0.01)
                 ->default(0)
@@ -100,10 +149,13 @@ class PayrollOvertimeAdjustmentResource extends Resource
             ])
             ->filters([
                 SelectFilter::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name'),
-                SelectFilter::make('employee_id')->label('Empleado')->relationship('employee', 'name')->searchable(),
+                SelectFilter::make('employee_id')
+                    ->label('Empleado')
+                    ->relationship('employee', 'name', modifyQueryUsing: fn (Builder $query) => $query->visibleTo(auth()->user()))
+                    ->searchable(),
             ])
             ->recordActions([
-                EditAction::make()->label('Editar')->after(fn (PayrollOvertimeAdjustment $record) => self::recalculatePeriod($record)),
+                EditAction::make()->label('Editar'),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
@@ -114,14 +166,22 @@ class PayrollOvertimeAdjustmentResource extends Resource
 
     public static function normalizeAmount(array $data): array
     {
+        if (auth()->user()?->isSupervisor()) {
+            $employeeIsAllowed = Employee::query()
+                ->visibleTo(auth()->user())
+                ->whereKey($data['employee_id'] ?? null)
+                ->exists();
+
+            if (! $employeeIsAllowed) {
+                throw ValidationException::withMessages([
+                    'employee_id' => 'Solo puedes seleccionar empleados asignados a tu supervisión.',
+                ]);
+            }
+        }
+
         $data['amount'] = round((float) ($data['hours'] ?? 0) * (float) ($data['hourly_rate'] ?? 0), 2);
 
         return $data;
-    }
-
-    public static function recalculatePeriod(PayrollOvertimeAdjustment $record): void
-    {
-        app(PayrollCalculationService::class)->recalculateEmployeePayrollResult($record->payrollPeriod, $record->employee);
     }
 
     private static function employeeOvertimeRate(int $employeeId): float

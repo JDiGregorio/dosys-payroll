@@ -3,6 +3,8 @@
 namespace App\Filament\Resources\Employees\Pages;
 
 use App\Filament\Resources\Employees\EmployeeResource;
+use App\Models\PayrollPeriod;
+use App\Services\PayrollCalculationService;
 use Filament\Actions\DeleteAction;
 use Filament\Resources\Pages\EditRecord;
 
@@ -30,5 +32,14 @@ class EditEmployee extends EditRecord
     protected function afterSave(): void
     {
         EmployeeResource::syncUserAccount($this->record, $this->userAccountId);
+
+        PayrollPeriod::query()
+            ->where('status', '!=', 'cerrado')
+            ->whereHas('dailyTimeReviews', fn ($query) => $query->where('employee_id', $this->record->id))
+            ->each(function (PayrollPeriod $period): void {
+                $service = app(PayrollCalculationService::class);
+                $service->generateDailyReviews($period);
+                $service->recalculateEmployeePayrollResult($period, $this->record);
+            });
     }
 }

@@ -13,9 +13,4 @@ class CreatePayrollOvertimeAdjustment extends CreateRecord
     {
         return PayrollOvertimeAdjustmentResource::normalizeAmount($data);
     }
-
-    protected function afterCreate(): void
-    {
-        PayrollOvertimeAdjustmentResource::recalculatePeriod($this->record);
-    }
 }

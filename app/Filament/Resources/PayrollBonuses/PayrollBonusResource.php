@@ -5,8 +5,8 @@ namespace App\Filament\Resources\PayrollBonuses;
 use App\Filament\Resources\PayrollBonuses\Pages\CreatePayrollBonus;
 use App\Filament\Resources\PayrollBonuses\Pages\EditPayrollBonus;
 use App\Filament\Resources\PayrollBonuses\Pages\ListPayrollBonuses;
+use App\Models\Employee;
 use App\Models\PayrollBonus;
-use App\Services\PayrollCalculationService;
 use BackedEnum;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
@@ -23,6 +23,7 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Validation\ValidationException;
 
 class PayrollBonusResource extends Resource
 {
@@ -46,10 +47,7 @@ class PayrollBonusResource extends Resource
         $user = auth()->user();
 
         if ($user?->isSupervisor()) {
-            $query->where(function (Builder $query) use ($user): void {
-                $query->where('proposed_by', $user->id)
-                    ->orWhereHas('employee', fn (Builder $query) => $query->where('supervisor_user_id', $user->id));
-            });
+            $query->whereHas('employee', fn (Builder $query) => $query->visibleTo($user));
         }
 
         return $query;
@@ -70,7 +68,9 @@ class PayrollBonusResource extends Resource
         $user = auth()->user();
 
         return $user?->isRrhh()
-            || ($user?->isSupervisor() && $record->proposed_by === $user->id && $record->payrollPeriod?->status !== 'cerrado');
+            || ($user?->isSupervisor()
+                && $record->employee?->supervisor_user_id === $user->id
+                && $record->payrollPeriod?->status !== 'cerrado');
     }
 
     public static function canDelete(Model $record): bool
@@ -86,17 +86,28 @@ class PayrollBonusResource extends Resource
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            Select::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name')->required(),
+            Select::make('payroll_period_id')
+                ->label('Período')
+                ->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->where('status', '!=', 'cerrado'))
+                ->required(),
             Select::make('scope_type')->label('Aplica a')->options([
                 'employee' => 'Empleado',
-                'team' => 'Team',
-                'campaign' => 'Campaña',
+                ...((auth()->user()?->isRrhh() ?? false) ? [
+                    'team' => 'Team',
+                    'campaign' => 'Campaña',
+                ] : []),
             ])->default('employee')->required()->live()->afterStateUpdated(function (Set $set): void {
                 $set('employee_id', null);
                 $set('team_id', null);
                 $set('campaign_id', null);
             }),
-            Select::make('employee_id')->label('Empleado')->relationship('employee', 'name')->searchable()->preload()->visible(fn ($get) => $get('scope_type') === 'employee')->required(fn ($get) => $get('scope_type') === 'employee'),
+            Select::make('employee_id')
+                ->label('Empleado')
+                ->relationship('employee', 'name', modifyQueryUsing: fn (Builder $query) => $query->visibleTo(auth()->user()))
+                ->searchable()
+                ->preload()
+                ->visible(fn ($get) => $get('scope_type') === 'employee')
+                ->required(fn ($get) => $get('scope_type') === 'employee'),
             Select::make('team_id')->label('Team')->relationship('team', 'name')->searchable()->preload()->visible(fn ($get) => $get('scope_type') === 'team')->required(fn ($get) => $get('scope_type') === 'team'),
             Select::make('campaign_id')->label('Campaña')->relationship('campaign', 'name')->searchable()->preload()->visible(fn ($get) => $get('scope_type') === 'campaign')->required(fn ($get) => $get('scope_type') === 'campaign'),
             Select::make('type')->label('Tipo')->options(self::typeOptions())->default('manual')->required(),
@@ -123,8 +134,8 @@ class PayrollBonusResource extends Resource
                 SelectFilter::make('type')->label('Tipo')->options(self::typeOptions()),
             ])
             ->recordActions([
-                EditAction::make()->label('Editar')->after(fn (PayrollBonus $record) => self::recalculateAffected($record)),
-                DeleteAction::make()->label('Eliminar')->after(fn (PayrollBonus $record) => self::recalculateAffected($record)),
+                EditAction::make()->label('Editar'),
+                DeleteAction::make()->label('Eliminar'),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
@@ -158,6 +169,23 @@ class PayrollBonusResource extends Resource
 
     public static function normalizeScopeData(array $data): array
     {
+        if (auth()->user()?->isSupervisor()) {
+            $data['scope_type'] = 'employee';
+            $data['team_id'] = null;
+            $data['campaign_id'] = null;
+
+            $employeeIsAllowed = Employee::query()
+                ->visibleTo(auth()->user())
+                ->whereKey($data['employee_id'] ?? null)
+                ->exists();
+
+            if (! $employeeIsAllowed) {
+                throw ValidationException::withMessages([
+                    'employee_id' => 'Solo puedes seleccionar empleados asignados a tu supervisión.',
+                ]);
+            }
+        }
+
         if (($data['scope_type'] ?? null) !== 'employee') {
             $data['employee_id'] = null;
         }
@@ -173,11 +201,6 @@ class PayrollBonusResource extends Resource
         $data['status'] = $data['status'] ?? 'aprobado';
 
         return $data;
-    }
-
-    private static function recalculateAffected(PayrollBonus $record): void
-    {
-        app(PayrollCalculationService::class)->recalculatePayrollResults($record->payrollPeriod);
     }
 
     public static function getPages(): array

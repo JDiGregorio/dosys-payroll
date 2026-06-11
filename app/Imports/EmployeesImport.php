@@ -35,8 +35,10 @@ class EmployeesImport implements ToCollection, WithHeadingRow
                 $overtimeHours = $this->number($data, ['horas_extras', 'overtime_hours']);
                 $hourlyRate = $this->number($data, ['salario_base_por_hora_por_nivel', 'hourly_rate']);
                 $overtimeHourlyRate = $hourlyRate * 1.25;
+                $dni = $this->string($data, ['dni', 'referencia_id', 'referencia']);
+                $bankAccountNumber = $this->string($data, ['no_cuenta', 'numero_de_cuenta', 'numero_cuenta', 'bank_account_number']);
 
-                Employee::query()->updateOrCreate(['name' => $name], [
+                $employeeData = [
                     'hubstaff_name' => $this->string($data, ['hubstaff_name']) ?: $name,
                     'name' => $name,
                     'department_id' => $this->catalogId(Department::class, $this->string($data, ['department'])),
@@ -55,7 +57,6 @@ class EmployeesImport implements ToCollection, WithHeadingRow
                     'monthly_salary' => round($dailyHours * $hourlyRate * 30, 2),
                     'daily_rate' => round($dailyHours * $hourlyRate, 4),
                     'overtime_hourly_rate' => round($overtimeHourlyRate, 4),
-                    'monthly_overtime_amount' => round($overtimeHours * $overtimeHourlyRate * (30 / 7), 2),
                     'base_salary' => $this->number($data, ['salario_base', 'base_salary']),
                     'expected_days' => $this->number($data, ['dias', 'days']),
                     'expected_total' => $this->number($data, ['total']),
@@ -64,7 +65,17 @@ class EmployeesImport implements ToCollection, WithHeadingRow
                     'time_management_bonus' => $this->number($data, ['time_management']),
                     'location' => $this->string($data, ['location']),
                     'active' => true,
-                ]);
+                ];
+
+                if ($dni !== null) {
+                    $employeeData['dni'] = $dni;
+                }
+
+                if ($bankAccountNumber !== null) {
+                    $employeeData['bank_account_number'] = $bankAccountNumber;
+                }
+
+                Employee::query()->updateOrCreate(['name' => $name], $employeeData);
             }
         });
     }

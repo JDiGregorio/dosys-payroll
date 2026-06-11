@@ -21,9 +21,4 @@ class EditPayrollOvertimeAdjustment extends EditRecord
     {
         return PayrollOvertimeAdjustmentResource::normalizeAmount($data);
     }
-
-    protected function afterSave(): void
-    {
-        PayrollOvertimeAdjustmentResource::recalculatePeriod($this->record);
-    }
 }

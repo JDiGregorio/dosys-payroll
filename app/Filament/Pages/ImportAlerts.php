@@ -26,6 +26,16 @@ class ImportAlerts extends Page
 
     public ?int $periodId = null;
 
+    public static function canAccess(): bool
+    {
+        return auth()->user()?->isRrhh() ?? false;
+    }
+
+    public static function shouldRegisterNavigation(): bool
+    {
+        return auth()->user()?->isRrhh() ?? false;
+    }
+
     public function mount(): void
     {
         $this->periodId = PayrollPeriod::query()->where('status', '!=', 'cerrado')->latest('starts_at')->value('id');

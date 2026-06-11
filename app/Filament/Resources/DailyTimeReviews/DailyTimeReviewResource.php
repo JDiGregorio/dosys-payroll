@@ -17,8 +17,12 @@ use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
+use Filament\Schemas\Components\Tabs;
+use Filament\Schemas\Components\Tabs\Tab;
+use Filament\Schemas\Components\View;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
+use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
@@ -46,14 +50,9 @@ class DailyTimeReviewResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        $query = parent::getEloquentQuery()->with(['employee.campaign', 'employee.team', 'payrollPeriod']);
-        $user = auth()->user();
-
-        if ($user?->isSupervisor()) {
-            $query->whereHas('employee', fn (Builder $query) => $query->where('supervisor_user_id', $user->id));
-        }
-
-        return $query;
+        return parent::getEloquentQuery()
+            ->whereHas('employee', fn (Builder $query) => $query->visibleTo(auth()->user()))
+            ->with(['employee.campaign', 'employee.team', 'payrollPeriod']);
     }
 
     public static function canViewAny(): bool
@@ -87,20 +86,51 @@ class DailyTimeReviewResource extends Resource
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            Select::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name')->required()->disabled(),
-            Select::make('employee_id')->label('Empleado')->relationship('employee', 'name')->searchable()->preload()->required()->disabled(),
-            DatePicker::make('date')->label('Fecha')->required()->disabled(),
-            TextInput::make('expected_hours')->label('Horas normales esperadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->expected_seconds) : '0:00')),
-            TextInput::make('assigned_overtime_hours')->label('Hora extra asignada del día')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->assigned_overtime_seconds) : '0:00')),
-            TextInput::make('required_hours')->label('Total requerido')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute(self::requiredSeconds($record)) : '0:00')),
-            TextInput::make('hubstaff_total_hours')->label('Total horas Hubstaff')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->hubstaff_total_seconds) : '0:00')),
-            TextInput::make('hubstaff_idle_hours')->label('Idle en horas')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->hubstaff_idle_seconds) : '0:00')),
-            TextInput::make('lost_time_hours')->label('Tiempo no trabajado')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute(self::lostTimeSeconds($record)) : '0:00')),
-            TextInput::make('justified_lost_time_hours')->label('Tiempo justificado')->helperText('Formato HH:MM. Solo restaura tiempo faltante de la jornada normal; la hora extra se paga si fue trabajada.')->placeholder('00:00')->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->justified_absence_seconds) : '0:00')),
-            Toggle::make('paid_day_off')->label('Día libre (OFF)')->helperText('Marca este día cuando no hubo registro porque era día libre y debe pagarse completo.')->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record)),
-            Toggle::make('absence_justified')->label('Ausencia justificada')->helperText('Marca si no hubo registro, pero el día debe pagarse por permiso o constancia.')->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record))->afterStateHydrated(fn (Toggle $component, ?DailyTimeReview $record) => $component->state($record ? self::isFullyJustifiedAbsence($record) : false)),
-            Textarea::make('supervisor_comment')->label('Comentario supervisor')->columnSpanFull(),
-            Textarea::make('rrhh_comment')->label('Comentario RRHH')->visible(fn () => auth()->user()?->isRrhh())->columnSpanFull(),
+            Tabs::make('Revisión diaria')
+                ->columnSpanFull()
+                ->tabs([
+                    Tab::make('Revisión y justificación')
+                        ->columns(2)
+                        ->schema([
+                            Select::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name')->required()->disabled(),
+                            Select::make('employee_id')
+                                ->label('Empleado')
+                                ->relationship('employee', 'name', modifyQueryUsing: fn (Builder $query) => $query->visibleTo(auth()->user()))
+                                ->searchable()
+                                ->preload()
+                                ->required()
+                                ->disabled(),
+                            DatePicker::make('date')->label('Fecha')->required()->disabled(),
+                            TextInput::make('expected_hours')->label('Horas normales esperadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->expected_seconds) : '0:00:00')),
+                            TextInput::make('assigned_overtime_hours')->label('Hora extra asignada del día')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond((int) $record->assigned_overtime_seconds) : '0:00:00')),
+                            TextInput::make('required_hours')->label('Total requerido')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond(self::requiredSeconds($record)) : '0:00:00')),
+                            TextInput::make('hubstaff_total_hours')->label('Total horas Hubstaff')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_total_seconds) : '0:00:00')),
+                            TextInput::make('hubstaff_idle_hours')->label('Idle reportado por Hubstaff')->helperText('Es un dato independiente enviado por Hubstaff; no representa necesariamente la diferencia contra las horas requeridas.')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_idle_seconds) : '0:00:00')),
+                            TextInput::make('lost_time_hours')->label('Tiempo no trabajado')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond(self::lostTimeSeconds($record)) : '0:00:00')),
+                            TextInput::make('justified_lost_time_hours')
+                                ->label('Tiempo justificado')
+                                ->helperText('Formato HH:MM. Se suma al tiempo de Hubstaff hasta completar el total requerido.')
+                                ->placeholder('00:00')
+                                ->rules(['regex:/^\d{1,3}:[0-5]\d$/'])
+                                ->validationMessages(['regex' => 'Ingresa el tiempo con formato HH:MM, por ejemplo 1:05.'])
+                                ->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->justified_absence_seconds) : '0:00')),
+                            Toggle::make('assigned_overtime_fulfilled')
+                                ->label('Cumplió la hora extra asignada')
+                                ->helperText('Actívalo cuando el supervisor confirma que la hora extra se cumplió. Se pagará a tarifa extra y cualquier faltante no justificado se tratará como tiempo normal.')
+                                ->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record) && (int) $record?->assigned_overtime_seconds > 0),
+                            Toggle::make('paid_day_off')->label('Día libre (OFF)')->helperText('Marca este día cuando no hubo registro porque era día libre y debe pagarse completo.')->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record)),
+                            Toggle::make('absence_justified')->label('Ausencia justificada')->helperText('Marca si no hubo registro, pero el día debe pagarse por permiso o constancia.')->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record))->afterStateHydrated(fn (Toggle $component, ?DailyTimeReview $record) => $component->state($record ? self::isFullyJustifiedAbsence($record) : false)),
+                            Textarea::make('supervisor_comment')->label('Comentario supervisor')->columnSpanFull(),
+                            Textarea::make('rrhh_comment')->label('Comentario RRHH')->visible(fn () => auth()->user()?->isRrhh())->columnSpanFull(),
+                        ]),
+                    Tab::make('Registros de Hubstaff')
+                        ->columns(1)
+                        ->schema([
+                            View::make('filament.resources.daily-time-reviews.hubstaff-entries')
+                                ->columnSpanFull(),
+                        ]),
+                ]),
         ]);
     }
 
@@ -121,6 +151,7 @@ class DailyTimeReviewResource extends Resource
                 self::hoursColumn('justified_absence_seconds', 'Ausencia justificada'),
                 self::hoursColumn('payable_seconds', 'Horas pagables'),
                 self::hoursColumn('difference_seconds', 'Diferencia'),
+                IconColumn::make('assigned_overtime_fulfilled')->label('Hora extra cumplida')->boolean()->toggleable(),
                 TextColumn::make('status')->label('Estado')->badge()->formatStateUsing(fn (string $state) => self::statusOptions()[$state] ?? $state),
                 TextColumn::make('supervisor_comment')->label('Comentario supervisor')->limit(30)->toggleable(),
                 TextColumn::make('rrhh_comment')->label('Comentario RRHH')->limit(30)->toggleable(),
@@ -184,14 +215,14 @@ class DailyTimeReviewResource extends Resource
         $parser = app(TimeParserService::class);
 
         if (self::hasHubstaffTime($record)) {
-            $normalMissingSeconds = self::normalMissingSeconds($record);
-            $justifiedSeconds = min($parser->parseToSeconds($data['justified_lost_time_hours'] ?? 0), $normalMissingSeconds);
+            $lostTimeSeconds = self::lostTimeSeconds($record);
+            $justifiedSeconds = min($parser->parseToSeconds($data['justified_lost_time_hours'] ?? 0), $lostTimeSeconds);
 
             $data['paid_day_off'] = false;
             $data['justified_idle_seconds'] = 0;
             $data['justified_absence_seconds'] = $justifiedSeconds;
             $data['unjustified_idle_seconds'] = (int) $record->hubstaff_idle_seconds;
-            $data['unjustified_absence_seconds'] = max($normalMissingSeconds - $justifiedSeconds, 0);
+            $data['unjustified_absence_seconds'] = max($lostTimeSeconds - $justifiedSeconds, 0);
         } else {
             $isOff = (bool) ($data['paid_day_off'] ?? false);
             $isJustifiedAbsence = (bool) ($data['absence_justified'] ?? false);
@@ -224,11 +255,6 @@ class DailyTimeReviewResource extends Resource
     private static function requiredSeconds(DailyTimeReview $record): int
     {
         return (int) $record->expected_seconds + (int) $record->assigned_overtime_seconds;
-    }
-
-    private static function normalMissingSeconds(DailyTimeReview $record): int
-    {
-        return max((int) $record->expected_seconds - (int) $record->hubstaff_total_seconds, 0);
     }
 
     private static function isFullyJustifiedAbsence(DailyTimeReview $record): bool

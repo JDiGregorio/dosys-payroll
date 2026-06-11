@@ -7,7 +7,6 @@ use App\Filament\Resources\EmployeeAdditionalDeductions\Pages\CreateEmployeeAddi
 use App\Filament\Resources\EmployeeAdditionalDeductions\Pages\EditEmployeeAdditionalDeduction;
 use App\Filament\Resources\EmployeeAdditionalDeductions\Pages\ListEmployeeAdditionalDeductions;
 use App\Models\EmployeeAdditionalDeduction;
-use App\Services\PayrollCalculationService;
 use BackedEnum;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -72,18 +71,13 @@ class EmployeeAdditionalDeductionResource extends Resource
                 SelectFilter::make('employee_id')->label('Empleado')->relationship('employee', 'name')->searchable(),
             ])
             ->recordActions([
-                EditAction::make()->label('Editar')->after(fn (EmployeeAdditionalDeduction $record) => self::recalculatePeriod($record)),
+                EditAction::make()->label('Editar'),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
                     DeleteBulkAction::make()->label('Eliminar'),
                 ]),
             ]);
-    }
-
-    public static function recalculatePeriod(EmployeeAdditionalDeduction $record): void
-    {
-        app(PayrollCalculationService::class)->recalculatePayrollResults($record->payrollPeriod);
     }
 
     public static function getPages(): array

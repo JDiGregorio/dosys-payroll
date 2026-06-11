@@ -2,6 +2,7 @@
 
 namespace App\Exports;
 
+use App\Models\PayrollBonus;
 use App\Models\PayrollDeduction;
 use App\Models\PayrollPeriod;
 use App\Models\PayrollResult;
@@ -13,14 +14,41 @@ use Maatwebsite\Excel\Concerns\WithMapping;
 
 class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, WithMapping
 {
-    public function __construct(private PayrollPeriod $period) {}
+    private const BONUS_LABELS = [
+        'qa' => 'Bono QA',
+        'productivity' => 'Bono de Productividad',
+        'time_management' => 'Bono TM',
+        'referred' => 'Bono referido',
+        'adjustment' => 'Ajuste',
+        'internet_subsidy' => 'Subsidio por internet',
+    ];
 
-    private ?Collection $extraDeductionTypes = null;
+    private const BONUS_FIELDS = [
+        'qa' => 'qa_bonus_amount',
+        'productivity' => 'productivity_bonus_amount',
+        'time_management' => 'time_management_bonus_amount',
+        'referred' => 'referred_bonus_amount',
+        'adjustment' => 'adjustment_bonus_amount',
+        'internet_subsidy' => 'internet_subsidy_amount',
+    ];
+
+    private ?Collection $bonusTypes = null;
+
+    private ?Collection $deductionTypes = null;
+
+    private ?Collection $deductionsByEmployee = null;
+
+    public function __construct(private PayrollPeriod $period) {}
 
     public function query()
     {
         return PayrollResult::query()
-            ->with(['employee.campaign', 'employee.tierLevel'])
+            ->with([
+                'employee.campaign',
+                'employee.team',
+                'employee.workRole',
+                'employee.tierLevel',
+            ])
             ->where('payroll_period_id', $this->period->id)
             ->orderBy('employee_id');
     }
@@ -28,29 +56,31 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
     public function headings(): array
     {
         $headings = [
+            'Referencia - ID',
+            'No. Cuenta',
             'Nombre empleado',
             'Campaña',
+            'Equipo',
+            'Posición',
             'Salario mensual',
-            'Tier',
+            'Salario quincenal',
+            'Tier level',
             'Pago por día',
+            'Hora',
+            'Hora extra',
             'Días trabajados',
             'Salario',
             'Bonos extras',
             'Horas extras',
-            'Bono referido',
         ];
 
-        if ($this->includeAdjustmentColumn()) {
-            $headings[] = 'Ajuste';
+        foreach ($this->bonusTypes() as $type) {
+            $headings[] = self::BONUS_LABELS[$type] ?? str($type)->headline()->toString();
         }
 
-        $headings = array_merge($headings, [
-            'Ingresos extra totales',
-            'Total devengado',
-            'IHSS',
-        ]);
+        $headings[] = 'Total devengado';
 
-        foreach ($this->extraDeductionTypes() as $deductionType) {
+        foreach ($this->deductionTypes() as $deductionType) {
             $headings[] = $deductionType->name;
         }
 
@@ -62,33 +92,36 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
 
     public function map($row): array
     {
+        $employee = $row->employee;
+
         $values = [
-            $row->employee?->name,
-            $row->employee?->campaign?->name,
+            $employee?->dni,
+            $employee?->bank_account_number,
+            $employee?->name,
+            $employee?->campaign?->name,
+            $employee?->team?->name,
+            $employee?->workRole?->name,
             $row->monthly_salary,
-            $row->employee?->tierLevel?->name,
+            $row->biweekly_salary_amount,
+            $employee?->tierLevel?->name,
             $row->daily_rate,
+            $row->hourly_rate,
+            $row->overtime_hourly_rate,
             $row->worked_days,
             $row->worked_salary_amount,
             $row->extra_bonuses_amount,
             $row->overtime_amount,
-            $row->referred_bonus_amount,
         ];
 
-        if ($this->includeAdjustmentColumn()) {
-            $values[] = $row->adjustment_bonus_amount;
+        foreach ($this->bonusTypes() as $type) {
+            $values[] = $row->{self::BONUS_FIELDS[$type]} ?? 0;
         }
 
-        $values = array_merge($values, [
-            $row->extras_total_amount,
-            $row->gross_amount,
-            $row->ihss_amount,
-        ]);
+        $values[] = $row->gross_amount;
+        $employeeDeductions = $this->deductionsByEmployee()->get($row->employee_id, collect());
 
-        foreach ($this->extraDeductionTypes() as $deductionType) {
-            $values[] = PayrollDeduction::query()
-                ->where('payroll_period_id', $this->period->id)
-                ->where('employee_id', $row->employee_id)
+        foreach ($this->deductionTypes() as $deductionType) {
+            $values[] = $employeeDeductions
                 ->where('deduction_type_id', $deductionType->id)
                 ->sum('amount');
         }
@@ -99,30 +132,61 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
         ]);
     }
 
-    private function includeAdjustmentColumn(): bool
+    private function bonusTypes(): Collection
     {
-        return PayrollResult::query()
-            ->where('payroll_period_id', $this->period->id)
-            ->where('adjustment_bonus_amount', '>', 0)
-            ->exists();
-    }
-
-    private function extraDeductionTypes(): Collection
-    {
-        if ($this->extraDeductionTypes !== null) {
-            return $this->extraDeductionTypes;
+        if ($this->bonusTypes !== null) {
+            return $this->bonusTypes;
         }
 
-        $this->extraDeductionTypes = PayrollDeduction::query()
+        $typesInPeriod = PayrollBonus::query()
+            ->where('payroll_period_id', $this->period->id)
+            ->where('status', '!=', 'rechazado')
+            ->where('amount', '>', 0)
+            ->whereNotIn('type', ['manual', 'other'])
+            ->pluck('type')
+            ->unique();
+
+        if (PayrollResult::query()
+            ->where('payroll_period_id', $this->period->id)
+            ->where('internet_subsidy_amount', '>', 0)
+            ->exists()) {
+            $typesInPeriod->push('internet_subsidy');
+        }
+
+        return $this->bonusTypes = collect(array_keys(self::BONUS_LABELS))
+            ->filter(fn (string $type): bool => $typesInPeriod->contains($type))
+            ->values();
+    }
+
+    private function deductionTypes(): Collection
+    {
+        if ($this->deductionTypes !== null) {
+            return $this->deductionTypes;
+        }
+
+        return $this->deductionTypes = PayrollDeduction::query()
             ->with('deductionType')
             ->where('payroll_period_id', $this->period->id)
+            ->where('status', 'aprobado')
             ->where('amount', '>', 0)
             ->get()
             ->pluck('deductionType')
-            ->filter(fn ($type) => $type && $type->code !== 'ihss')
+            ->filter()
             ->unique('id')
             ->values();
+    }
 
-        return $this->extraDeductionTypes;
+    private function deductionsByEmployee(): Collection
+    {
+        if ($this->deductionsByEmployee !== null) {
+            return $this->deductionsByEmployee;
+        }
+
+        return $this->deductionsByEmployee = PayrollDeduction::query()
+            ->where('payroll_period_id', $this->period->id)
+            ->where('status', 'aprobado')
+            ->where('amount', '>', 0)
+            ->get()
+            ->groupBy('employee_id');
     }
 }

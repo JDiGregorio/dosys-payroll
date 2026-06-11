@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -127,5 +128,13 @@ class Employee extends Model
     public function payrollDeductions(): HasMany
     {
         return $this->hasMany(PayrollDeduction::class);
+    }
+
+    public function scopeVisibleTo(Builder $query, ?User $user): Builder
+    {
+        return $query->when(
+            $user?->isSupervisor(),
+            fn (Builder $query) => $query->where('supervisor_user_id', $user->id),
+        );
     }
 }

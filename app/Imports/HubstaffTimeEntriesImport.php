@@ -14,6 +14,7 @@ use Illuminate\Support\Str;
 use Maatwebsite\Excel\Concerns\ToCollection;
 use Maatwebsite\Excel\Concerns\WithHeadingRow;
 use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
+use RuntimeException;
 
 class HubstaffTimeEntriesImport implements ToCollection, WithHeadingRow
 {
@@ -39,6 +40,13 @@ class HubstaffTimeEntriesImport implements ToCollection, WithHeadingRow
                     continue;
                 }
 
+                if (! Carbon::parse($date)->betweenIncluded($this->period->starts_at, $this->period->ends_at)) {
+                    throw new RuntimeException(
+                        "El archivo contiene la fecha {$date}, fuera del período "
+                        .$this->period->starts_at->format('Y-m-d').' a '.$this->period->ends_at->format('Y-m-d').'.',
+                    );
+                }
+
                 HubstaffTimeEntry::query()->create([
                     'payroll_period_id' => $this->period->id,
                     'hubstaff_import_id' => $this->hubstaffImport?->id,
@@ -56,6 +64,10 @@ class HubstaffTimeEntriesImport implements ToCollection, WithHeadingRow
                 ]);
 
                 $count++;
+            }
+
+            if ($count === 0) {
+                throw new RuntimeException('El archivo no contiene registros válidos de Hubstaff.');
             }
 
             if ($this->hubstaffImport) {

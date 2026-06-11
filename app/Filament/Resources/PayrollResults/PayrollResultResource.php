@@ -6,6 +6,7 @@ use App\Filament\Resources\PayrollResults\Pages\CreatePayrollResult;
 use App\Filament\Resources\PayrollResults\Pages\EditPayrollResult;
 use App\Filament\Resources\PayrollResults\Pages\ListPayrollResults;
 use App\Models\PayrollResult;
+use App\Services\TimeParserService;
 use BackedEnum;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Select;
@@ -40,14 +41,9 @@ class PayrollResultResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        $query = parent::getEloquentQuery()->with(['employee.campaign', 'employee.team', 'employee.tierLevel', 'payrollPeriod']);
-        $user = auth()->user();
-
-        if ($user?->isSupervisor()) {
-            $query->whereHas('employee', fn (Builder $query) => $query->where('supervisor_user_id', $user->id));
-        }
-
-        return $query;
+        return parent::getEloquentQuery()
+            ->whereHas('employee', fn (Builder $query) => $query->visibleTo(auth()->user()))
+            ->with(['employee.campaign', 'employee.team', 'employee.tierLevel', 'payrollPeriod']);
     }
 
     public static function canViewAny(): bool
@@ -82,6 +78,7 @@ class PayrollResultResource extends Resource
                 ->columnSpanFull()
                 ->tabs([
                     Tab::make('Editar planilla')
+                        ->columns(2)
                         ->schema([
                             Select::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name')->disabled(),
                             Select::make('employee_id')->label('Empleado')->relationship('employee', 'name')->disabled(),
@@ -92,6 +89,14 @@ class PayrollResultResource extends Resource
                             TextInput::make('overtime_hourly_rate')->label('Valor hora extra')->numeric(),
                             TextInput::make('worked_days')->label('Días trabajados')->numeric(),
                             TextInput::make('worked_salary_amount')->label('Salario')->numeric(),
+                            TextInput::make('lost_time_hours')
+                                ->label('Tiempo perdido')
+                                ->disabled()
+                                ->dehydrated(false)
+                                ->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state(
+                                    $record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->lost_time_seconds) : '0:00',
+                                )),
+                            TextInput::make('lost_time_amount')->label('Impacto del tiempo perdido')->numeric()->readOnly(),
                             TextInput::make('extra_bonuses_amount')->label('Bonos extras')->numeric(),
                             TextInput::make('overtime_amount')->label('Horas extras')->numeric(),
                             TextInput::make('referred_bonus_amount')->label('Bono referido')->numeric(),
@@ -123,6 +128,11 @@ class PayrollResultResource extends Resource
                 TextColumn::make('daily_rate')->label('Pago por día')->money('HNL'),
                 TextColumn::make('worked_days')->label('Días trabajados'),
                 TextColumn::make('worked_salary_amount')->label('Salario')->money('HNL'),
+                TextColumn::make('lost_time_seconds')
+                    ->label('Tiempo perdido')
+                    ->state(fn (PayrollResult $record) => app(TimeParserService::class)->secondsToHourMinute((int) $record->lost_time_seconds))
+                    ->alignRight(),
+                TextColumn::make('lost_time_amount')->label('Impacto tiempo perdido')->money('HNL'),
                 TextColumn::make('extra_bonuses_amount')->label('Bonos extras')->money('HNL'),
                 TextColumn::make('overtime_amount')->label('Horas extras')->money('HNL'),
                 TextColumn::make('referred_bonus_amount')->label('Bono referido')->money('HNL'),
