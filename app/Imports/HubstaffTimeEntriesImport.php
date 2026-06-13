@@ -3,6 +3,7 @@
 namespace App\Imports;
 
 use App\Models\Employee;
+use App\Models\EmployeeNameMapping;
 use App\Models\HubstaffImport;
 use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
@@ -81,7 +82,12 @@ class HubstaffTimeEntriesImport implements ToCollection, WithHeadingRow
 
     private function resolveEmployeeId(string $member): ?int
     {
-        return Employee::query()
+        $mappedEmployeeId = EmployeeNameMapping::query()
+            ->where('hubstaff_member', $member)
+            ->where('is_active', true)
+            ->value('employee_id');
+
+        return $mappedEmployeeId ?? Employee::query()
             ->where('hubstaff_name', $member)
             ->orWhere('name', $member)
             ->value('id');

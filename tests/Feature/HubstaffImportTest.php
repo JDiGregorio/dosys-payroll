@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Imports\HubstaffTimeEntriesImport;
 use App\Models\Employee;
+use App\Models\EmployeeNameMapping;
 use App\Models\PayrollPeriod;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Maatwebsite\Excel\Facades\Excel;
@@ -84,5 +85,38 @@ class HubstaffImportTest extends TestCase
         } finally {
             $this->assertDatabaseCount('hubstaff_time_entries', 0);
         }
+    }
+
+    public function test_it_uses_saved_employee_name_mappings_for_future_imports(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'June 2026',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado de planilla',
+            'daily_hours' => 8,
+            'hourly_rate' => 10,
+        ]);
+        EmployeeNameMapping::query()->create([
+            'employee_id' => $employee->id,
+            'hubstaff_member' => 'Nombre diferente en Hubstaff',
+            'confidence' => 100,
+            'is_active' => true,
+        ]);
+
+        $path = storage_path('app/testing-hubstaff-name-mapping.csv');
+        file_put_contents($path, implode("\n", [
+            'Date,Member,Project,Team,Regular hours,Total hours,Activity %,Idle (%),Idle (hr)',
+            '2026-06-01,Nombre diferente en Hubstaff,Operations,Team A,08:00:00,08:00:00,80,10,00:05:00',
+        ]));
+
+        Excel::import(new HubstaffTimeEntriesImport($period), $path);
+
+        $this->assertDatabaseHas('hubstaff_time_entries', [
+            'hubstaff_member' => 'Nombre diferente en Hubstaff',
+            'employee_id' => $employee->id,
+        ]);
     }
 }

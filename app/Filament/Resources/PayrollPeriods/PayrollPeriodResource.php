@@ -14,6 +14,7 @@ use App\Models\Employee;
 use App\Models\HubstaffImport;
 use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
+use App\Services\HubstaffEmployeeMappingService;
 use App\Services\PayrollCalculationService;
 use BackedEnum;
 use Filament\Actions\Action;
@@ -195,6 +196,63 @@ class PayrollPeriodResource extends Resource
                 Notification::make()->title('Planilla calculada')->success()->send();
             })
             ->visible(fn (PayrollPeriod $record) => (auth()->user()?->isRrhh() ?? false) && $record->status !== 'cerrado');
+    }
+
+    public static function mapHubstaffEmployeeAction(): Action
+    {
+        return Action::make('mapHubstaffEmployee')
+            ->label('Mapear empleado Hubstaff')
+            ->icon('heroicon-o-link')
+            ->modalHeading('Mapear empleado de Hubstaff')
+            ->modalDescription('La relación se aplicará al período actual y se reutilizará en futuras importaciones.')
+            ->modalSubmitActionLabel('Mapear empleado')
+            ->form([
+                Select::make('hubstaff_member')
+                    ->label('Empleado sin mapeo')
+                    ->options(fn (PayrollPeriod $record) => HubstaffTimeEntry::query()
+                        ->where('payroll_period_id', $record->id)
+                        ->whereNull('employee_id')
+                        ->whereNotNull('hubstaff_member')
+                        ->distinct()
+                        ->orderBy('hubstaff_member')
+                        ->pluck('hubstaff_member', 'hubstaff_member')
+                        ->all())
+                    ->searchable()
+                    ->required(),
+                Select::make('employee_id')
+                    ->label('Empleado de planilla')
+                    ->options(fn () => Employee::query()
+                        ->where('active', true)
+                        ->orderBy('name')
+                        ->pluck('name', 'id')
+                        ->all())
+                    ->searchable()
+                    ->preload()
+                    ->required(),
+            ])
+            ->action(function (
+                PayrollPeriod $record,
+                array $data,
+                HubstaffEmployeeMappingService $mappingService,
+            ): void {
+                $updatedEntries = $mappingService->map(
+                    $record,
+                    (string) $data['hubstaff_member'],
+                    (int) $data['employee_id'],
+                );
+
+                Notification::make()
+                    ->title('Empleado mapeado y período recalculado')
+                    ->body("Se actualizaron {$updatedEntries} registros de Hubstaff.")
+                    ->success()
+                    ->send();
+            })
+            ->visible(fn (PayrollPeriod $record) => (auth()->user()?->isRrhh() ?? false)
+                && $record->status !== 'cerrado'
+                && HubstaffTimeEntry::query()
+                    ->where('payroll_period_id', $record->id)
+                    ->whereNull('employee_id')
+                    ->exists());
     }
 
     private static function exportPayrollAction(): Action

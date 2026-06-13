@@ -17,6 +17,7 @@ class EditPayrollPeriod extends EditRecord
     {
         return [
             PayrollPeriodResource::importHubstaffAction(),
+            PayrollPeriodResource::mapHubstaffEmployeeAction(),
             PayrollPeriodResource::recalculatePayrollAction(),
             DeleteAction::make()->label('Eliminar'),
         ];

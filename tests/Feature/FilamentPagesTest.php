@@ -532,17 +532,25 @@ class FilamentPagesTest extends TestCase
             'starts_at' => '2026-06-01',
             'ends_at' => '2026-06-15',
         ]);
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'hubstaff_member' => 'Empleado pendiente de mapeo',
+            'date' => '2026-06-01',
+            'total_seconds' => 28800,
+        ]);
 
         $this->actingAs($user);
 
         $this->get('/admin/payroll-periods')
             ->assertOk()
             ->assertDontSee('Importar CSV de Hubstaff')
+            ->assertDontSee('Mapear empleado Hubstaff')
             ->assertDontSee('Calcular planilla');
 
         $this->get("/admin/payroll-periods/{$period->id}/edit")
             ->assertOk()
-            ->assertSee('Importar CSV de Hubstaff')
+            ->assertSee('Reemplazar CSV de Hubstaff')
+            ->assertSee('Mapear empleado Hubstaff')
             ->assertSee('Calcular planilla');
     }
 
