@@ -95,7 +95,7 @@ class PayrollCalculationServiceTest extends TestCase
         ]);
     }
 
-    public function test_idle_review_cannot_exceed_total_idle_when_recalculated(): void
+    public function test_idle_is_kept_as_reported_without_justification(): void
     {
         $period = PayrollPeriod::query()->create([
             'name' => 'May 2026',
@@ -117,7 +117,11 @@ class PayrollCalculationServiceTest extends TestCase
 
         app(PayrollCalculationService::class)->recalculateDailyReview($review);
 
-        $this->assertSame(300, $review->refresh()->unjustified_idle_seconds);
+        $review->refresh();
+
+        $this->assertSame(0, $review->justified_idle_seconds);
+        $this->assertSame(1800, $review->unjustified_idle_seconds);
+        $this->assertSame(1800, $review->pending_idle_seconds);
     }
 
     public function test_team_bonus_and_deductions_are_included_in_net_amount(): void

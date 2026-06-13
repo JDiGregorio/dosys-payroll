@@ -117,11 +117,9 @@ class PayrollCalculationService
             $review->{$field} = max((int) $review->{$field}, 0);
         }
 
-        $idleTotal = $review->justified_idle_seconds + $review->unjustified_idle_seconds;
-
-        if ($idleTotal > $review->hubstaff_idle_seconds) {
-            $review->unjustified_idle_seconds = max($review->hubstaff_idle_seconds - $review->justified_idle_seconds, 0);
-        }
+        $review->justified_idle_seconds = 0;
+        $review->unjustified_idle_seconds = (int) $review->hubstaff_idle_seconds;
+        $review->pending_idle_seconds = (int) $review->hubstaff_idle_seconds;
 
         if ($review->paid_day_off) {
             $review->justified_absence_seconds = 0;

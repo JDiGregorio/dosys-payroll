@@ -64,7 +64,7 @@ class DeductionTypeResource extends Resource
             TextColumn::make('name')->label('Nombre')->searchable()->sortable(),
             TextColumn::make('code')->label('Código')->badge(),
             TextColumn::make('calculation_type')->label('Cálculo')->badge(),
-            TextColumn::make('default_amount')->label('Monto')->money('HNL'),
+            TextColumn::make('default_amount')->label('Monto')->money('HNL', locale: 'en-US'),
             IconColumn::make('active')->label('Activo')->boolean(),
         ])->recordActions([EditAction::make()->label('Editar')])
             ->toolbarActions([BulkActionGroup::make([DeleteBulkAction::make()->label('Eliminar')])]);

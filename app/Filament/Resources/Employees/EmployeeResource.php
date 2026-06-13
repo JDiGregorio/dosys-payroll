@@ -56,7 +56,12 @@ class EmployeeResource extends Resource
 
     public static function canViewAny(): bool
     {
-        return (bool) auth()->user()?->active;
+        return auth()->user()?->isRrhh() ?? false;
+    }
+
+    public static function shouldRegisterNavigation(): bool
+    {
+        return auth()->user()?->isRrhh() ?? false;
     }
 
     public static function canCreate(): bool
@@ -65,6 +70,11 @@ class EmployeeResource extends Resource
     }
 
     public static function canEdit(Model $record): bool
+    {
+        return auth()->user()?->isRrhh() ?? false;
+    }
+
+    public static function canView(Model $record): bool
     {
         return auth()->user()?->isRrhh() ?? false;
     }
@@ -85,10 +95,12 @@ class EmployeeResource extends Resource
             TextInput::make('dni')
                 ->label('DNI')
                 ->maxLength(255)
+                ->afterStateHydrated(fn (TextInput $component, ?Employee $record) => $component->state($record?->dni))
                 ->unique(ignoreRecord: true),
             TextInput::make('bank_account_number')
                 ->label('Número de cuenta')
                 ->maxLength(255)
+                ->afterStateHydrated(fn (TextInput $component, ?Employee $record) => $component->state($record?->bank_account_number))
                 ->unique(ignoreRecord: true),
             TextInput::make('name')->label('Nombre')->required()->maxLength(255),
             TextInput::make('hubstaff_name')
@@ -186,8 +198,14 @@ class EmployeeResource extends Resource
     {
         return $table
             ->columns([
-                TextColumn::make('dni')->label('DNI')->searchable()->toggleable(),
-                TextColumn::make('bank_account_number')->label('No. cuenta')->searchable()->toggleable(),
+                TextColumn::make('dni')
+                    ->label('DNI')
+                    ->state(fn (Employee $record): ?string => $record->dni)
+                    ->searchable(),
+                TextColumn::make('bank_account_number')
+                    ->label('No. cuenta')
+                    ->state(fn (Employee $record): ?string => $record->bank_account_number)
+                    ->searchable(),
                 TextColumn::make('name')->label('Nombre')->searchable()->sortable(),
                 TextColumn::make('campaign.name')->label('Campaña')->sortable(),
                 TextColumn::make('team.name')->label('Team')->sortable(),
@@ -196,8 +214,8 @@ class EmployeeResource extends Resource
                 TextColumn::make('tierLevel.name')->label('Tier')->toggleable(),
                 TextColumn::make('daily_hours')->label('Horas diarias')->numeric()->sortable(),
                 TextColumn::make('overtime_hours')->label('Horas extra asignadas')->numeric()->sortable(),
-                TextColumn::make('hourly_rate')->label('Pago por hora')->money('HNL')->sortable(),
-                TextColumn::make('overtime_hourly_rate')->label('Valor hora extra')->money('HNL')->toggleable(),
+                TextColumn::make('hourly_rate')->label('Pago por hora')->money('HNL', locale: 'en-US')->sortable(),
+                TextColumn::make('overtime_hourly_rate')->label('Valor hora extra')->money('HNL', locale: 'en-US')->toggleable(),
                 IconColumn::make('active')->label('Activo')->boolean(),
             ])
             ->filters([

@@ -127,7 +127,7 @@ class PayrollBonusResource extends Resource
                 TextColumn::make('team.name')->label('Team'),
                 TextColumn::make('campaign.name')->label('Campaña'),
                 TextColumn::make('type')->label('Tipo')->badge()->formatStateUsing(fn (string $state) => self::typeOptions()[$state] ?? $state),
-                TextColumn::make('amount')->label('Monto')->money('HNL')->sortable(),
+                TextColumn::make('amount')->label('Monto')->money('HNL', locale: 'en-US')->sortable(),
             ])
             ->filters([
                 SelectFilter::make('payroll_period_id')->relationship('payrollPeriod', 'name')->label('Período'),

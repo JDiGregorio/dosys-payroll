@@ -63,8 +63,8 @@ class TierLevelResource extends Resource
             TextColumn::make('position_name')->label('Puesto')->limit(35),
             TextColumn::make('scheduleType.name')->label('Jornada'),
             TextColumn::make('weekly_hours')->label('Horas'),
-            TextColumn::make('monthly_salary')->label('Salario')->money('HNL'),
-            TextColumn::make('hourly_rate')->label('Hora')->money('HNL'),
+            TextColumn::make('monthly_salary')->label('Salario')->money('HNL', locale: 'en-US'),
+            TextColumn::make('hourly_rate')->label('Hora')->money('HNL', locale: 'en-US'),
             IconColumn::make('active')->label('Activo')->boolean(),
         ])->recordActions([EditAction::make()->label('Editar')])
             ->toolbarActions([BulkActionGroup::make([DeleteBulkAction::make()->label('Eliminar')])]);

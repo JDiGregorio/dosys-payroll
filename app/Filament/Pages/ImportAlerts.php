@@ -8,6 +8,7 @@ use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
 use Filament\Pages\Page;
 use Filament\Support\Icons\Heroicon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 
 class ImportAlerts extends Page
@@ -28,12 +29,14 @@ class ImportAlerts extends Page
 
     public static function canAccess(): bool
     {
-        return auth()->user()?->isRrhh() ?? false;
+        $user = auth()->user();
+
+        return (bool) $user?->active && ($user->isRrhh() || $user->isSupervisor());
     }
 
     public static function shouldRegisterNavigation(): bool
     {
-        return auth()->user()?->isRrhh() ?? false;
+        return static::canAccess();
     }
 
     public function mount(): void
@@ -53,6 +56,10 @@ class ImportAlerts extends Page
 
     public function unmappedMembers(): Collection
     {
+        if (! auth()->user()?->isRrhh()) {
+            return collect();
+        }
+
         return HubstaffTimeEntry::query()
             ->when($this->periodId, fn ($query) => $query->where('payroll_period_id', $this->periodId))
             ->whereNull('employee_id')
@@ -65,10 +72,9 @@ class ImportAlerts extends Page
 
     public function shortPayableDays(): Collection
     {
-        return DailyTimeReview::query()
-            ->with('employee.campaign', 'employee.team')
-            ->when($this->periodId, fn ($query) => $query->where('payroll_period_id', $this->periodId))
+        return $this->visibleReviewsQuery()
             ->whereRaw('payable_seconds < expected_seconds + assigned_overtime_seconds')
+            ->where('unjustified_absence_seconds', '>', 0)
             ->orderBy('date')
             ->limit(50)
             ->get();
@@ -76,11 +82,10 @@ class ImportAlerts extends Page
 
     public function highIdleDays(): Collection
     {
-        return DailyTimeReview::query()
-            ->with('employee')
-            ->when($this->periodId, fn ($query) => $query->where('payroll_period_id', $this->periodId))
-            ->where('hubstaff_idle_seconds', '>', 1800)
-            ->orderByDesc('hubstaff_idle_seconds')
+        return $this->visibleReviewsQuery()
+            ->where('hubstaff_idle_seconds', '>', 180)
+            ->orderBy('date')
+            ->orderBy('employee_id')
             ->limit(50)
             ->get();
     }
@@ -88,5 +93,13 @@ class ImportAlerts extends Page
     public function reviewUrl(DailyTimeReview $review): string
     {
         return DailyTimeReviewResource::getUrl('edit', ['record' => $review]);
+    }
+
+    private function visibleReviewsQuery(): Builder
+    {
+        return DailyTimeReview::query()
+            ->with('employee.campaign', 'employee.team')
+            ->whereHas('employee', fn (Builder $query) => $query->visibleTo(auth()->user()))
+            ->when($this->periodId, fn (Builder $query) => $query->where('payroll_period_id', $this->periodId));
     }
 }

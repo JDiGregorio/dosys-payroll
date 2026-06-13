@@ -61,7 +61,7 @@ class EmployeeDeductionResource extends Resource
         return $table->columns([
             TextColumn::make('employee.name')->label('Empleado')->searchable()->sortable(),
             TextColumn::make('deductionType.name')->label('Deducción')->sortable(),
-            TextColumn::make('amount')->label('Monto')->money('HNL'),
+            TextColumn::make('amount')->label('Monto')->money('HNL', locale: 'en-US'),
             TextColumn::make('percentage')->label('Porcentaje'),
             IconColumn::make('active')->label('Activo')->boolean(),
         ])->filters([

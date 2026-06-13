@@ -3,8 +3,11 @@
 namespace Tests\Feature;
 
 use App\Filament\Pages\DailyReviewCalendar;
+use App\Filament\Pages\ImportAlerts;
 use App\Filament\Resources\Campaigns\CampaignResource;
 use App\Filament\Resources\Employees\EmployeeResource;
+use App\Filament\Resources\Employees\Pages\EditEmployee;
+use App\Filament\Resources\Employees\Pages\ListEmployees;
 use App\Models\Campaign;
 use App\Models\ContractType;
 use App\Models\DailyTimeReview;
@@ -12,6 +15,7 @@ use App\Models\Department;
 use App\Models\Employee;
 use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
+use App\Models\PayrollResult;
 use App\Models\ScheduleType;
 use App\Models\Team;
 use App\Models\TierLevel;
@@ -115,6 +119,36 @@ class FilamentPagesTest extends TestCase
         $this->actingAs($user);
 
         $this->get("/admin/employees/{$employee->id}/edit")->assertOk();
+    }
+
+    public function test_employee_dni_and_bank_account_are_visible_in_edit_and_index(): void
+    {
+        $user = User::query()->create([
+            'name' => 'Admin',
+            'email' => 'employee-identifiers@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado Identificado',
+            'dni' => '0801-1990-12345',
+            'bank_account_number' => '00123456789',
+            'active' => true,
+        ]);
+
+        $this->actingAs($user);
+
+        Livewire::test(EditEmployee::class, ['record' => $employee->getRouteKey()])
+            ->assertFormSet([
+                'dni' => '0801-1990-12345',
+                'bank_account_number' => '00123456789',
+            ]);
+
+        Livewire::test(ListEmployees::class)
+            ->assertCanSeeTableRecords([$employee])
+            ->assertSee('0801-1990-12345')
+            ->assertSee('00123456789');
     }
 
     public function test_tier_one_employee_uses_trial_period_contract(): void
@@ -228,7 +262,7 @@ class FilamentPagesTest extends TestCase
             ->assertDontSee('8:00 h');
     }
 
-    public function test_supervisor_only_sees_assigned_employees_and_cannot_access_configuration(): void
+    public function test_supervisor_cannot_access_rrhh_or_employee_management(): void
     {
         $supervisor = User::query()->create([
             'name' => 'Supervisor',
@@ -258,13 +292,179 @@ class FilamentPagesTest extends TestCase
 
         $this->actingAs($supervisor);
 
-        $this->get('/admin/employees')
-            ->assertOk()
-            ->assertSee('Empleado asignado')
-            ->assertDontSee('Empleado ajeno');
-
+        $this->get('/admin/employees')->assertForbidden();
         $this->get('/admin/campaigns')->assertForbidden();
+        $this->get('/admin')->assertOk()->assertDontSee('RRHH');
+        $this->assertFalse(EmployeeResource::shouldRegisterNavigation());
         $this->assertFalse(CampaignResource::shouldRegisterNavigation());
+    }
+
+    public function test_supervisor_can_access_allowed_payroll_modules_and_view_assigned_payroll_detail(): void
+    {
+        $supervisor = User::query()->create([
+            'name' => 'Supervisor Payroll',
+            'email' => 'supervisor-payroll@example.com',
+            'password' => 'password',
+            'profile' => 'supervisor',
+            'active' => true,
+        ]);
+        $otherSupervisor = User::query()->create([
+            'name' => 'Other Payroll',
+            'email' => 'other-payroll@example.com',
+            'password' => 'password',
+            'profile' => 'supervisor',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Junio supervisión',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+        ]);
+        $assigned = Employee::query()->create([
+            'name' => 'Asignado Payroll',
+            'supervisor_user_id' => $supervisor->id,
+            'active' => true,
+        ]);
+        $unassigned = Employee::query()->create([
+            'name' => 'No asignado Payroll',
+            'supervisor_user_id' => $otherSupervisor->id,
+            'active' => true,
+        ]);
+        $assignedResult = PayrollResult::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $assigned->id,
+            'monthly_salary' => 7824.33,
+            'net_amount' => 7824.33,
+        ]);
+        $unassignedResult = PayrollResult::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $unassigned->id,
+        ]);
+        foreach ([$assigned, $unassigned] as $employee) {
+            DailyTimeReview::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'date' => '2026-06-01',
+                'expected_seconds' => 28800,
+                'hubstaff_total_seconds' => 21600,
+                'payable_seconds' => 21600,
+                'unjustified_absence_seconds' => 7200,
+            ]);
+        }
+
+        $this->actingAs($supervisor);
+
+        $this->get('/admin/import-alerts')
+            ->assertOk()
+            ->assertSee('Asignado Payroll')
+            ->assertDontSee('No asignado Payroll');
+        $this->get('/admin/daily-review-calendar')->assertOk();
+        $this->get('/admin/payroll-bonuses')->assertOk();
+        $this->get('/admin/payroll-overtime-adjustments')->assertOk();
+        $this->get('/admin/payroll-results')
+            ->assertOk()
+            ->assertSee('Asignado Payroll')
+            ->assertDontSee('No asignado Payroll')
+            ->assertDontSee('Editar')
+            ->assertSee('7,824.33');
+        $this->get("/admin/payroll-results/{$assignedResult->id}")
+            ->assertOk()
+            ->assertSee('Detalle de planilla')
+            ->assertDontSee('Guardar cambios');
+        $this->get("/admin/payroll-results/{$assignedResult->id}/edit")->assertForbidden();
+        $this->get("/admin/payroll-results/{$unassignedResult->id}")->assertNotFound();
+
+        $this->assertTrue(ImportAlerts::shouldRegisterNavigation());
+    }
+
+    public function test_import_alerts_show_only_pending_reviews_for_supervisor(): void
+    {
+        $supervisor = User::query()->create([
+            'name' => 'Supervisor Alerts',
+            'email' => 'supervisor-alerts@example.com',
+            'password' => 'password',
+            'profile' => 'supervisor',
+            'active' => true,
+        ]);
+        $otherSupervisor = User::query()->create([
+            'name' => 'Other Alerts',
+            'email' => 'other-alerts@example.com',
+            'password' => 'password',
+            'profile' => 'supervisor',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Alertas junio',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+        ]);
+        $pendingHoursEmployee = Employee::query()->create([
+            'name' => 'Horas Pendientes',
+            'supervisor_user_id' => $supervisor->id,
+            'active' => true,
+        ]);
+        $pendingIdleEmployee = Employee::query()->create([
+            'name' => 'Idle Pendiente',
+            'supervisor_user_id' => $supervisor->id,
+            'active' => true,
+        ]);
+        $foreignEmployee = Employee::query()->create([
+            'name' => 'Alerta Ajena',
+            'supervisor_user_id' => $otherSupervisor->id,
+            'active' => true,
+        ]);
+
+        $pendingHours = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $pendingHoursEmployee->id,
+            'date' => '2026-06-01',
+            'expected_seconds' => 28800,
+            'assigned_overtime_seconds' => 3600,
+            'payable_seconds' => 28800,
+            'unjustified_absence_seconds' => 3600,
+        ]);
+        $pendingIdle = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $pendingIdleEmployee->id,
+            'date' => '2026-06-02',
+            'expected_seconds' => 28800,
+            'payable_seconds' => 28800,
+            'hubstaff_idle_seconds' => 240,
+            'unjustified_idle_seconds' => 240,
+        ]);
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $foreignEmployee->id,
+            'date' => '2026-06-03',
+            'expected_seconds' => 28800,
+            'assigned_overtime_seconds' => 3600,
+            'payable_seconds' => 28800,
+            'unjustified_absence_seconds' => 3600,
+            'hubstaff_idle_seconds' => 600,
+            'unjustified_idle_seconds' => 600,
+        ]);
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'hubstaff_member' => 'Persona sin mapeo',
+            'date' => '2026-06-04',
+            'project' => 'Operations',
+        ]);
+
+        $this->actingAs($supervisor);
+
+        $component = Livewire::test(ImportAlerts::class)
+            ->assertSee('Días con horas pagables menores a las esperadas')
+            ->assertSee('Días con idle mayor a 3 minutos')
+            ->assertDontSee('Días con horas pagables menores a las esperadas Justificados')
+            ->assertDontSee('Días con idle mayor a 3 minutos Justificados')
+            ->assertDontSee('Empleados Hubstaff sin mapeo')
+            ->assertDontSee('Alerta Ajena');
+
+        $page = $component->instance();
+
+        $this->assertSame([$pendingHours->id], $page->shortPayableDays()->pluck('id')->all());
+        $this->assertSame([$pendingIdle->id], $page->highIdleDays()->pluck('id')->all());
+        $this->assertTrue($page->unmappedMembers()->isEmpty());
     }
 
     public function test_supervisor_daily_review_calendar_only_lists_assigned_employees(): void

@@ -5,10 +5,12 @@ namespace App\Filament\Resources\PayrollResults;
 use App\Filament\Resources\PayrollResults\Pages\CreatePayrollResult;
 use App\Filament\Resources\PayrollResults\Pages\EditPayrollResult;
 use App\Filament\Resources\PayrollResults\Pages\ListPayrollResults;
+use App\Filament\Resources\PayrollResults\Pages\ViewPayrollResult;
 use App\Models\PayrollResult;
 use App\Services\TimeParserService;
 use BackedEnum;
 use Filament\Actions\EditAction;
+use Filament\Actions\ViewAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
@@ -61,6 +63,14 @@ class PayrollResultResource extends Resource
         return auth()->user()?->isRrhh() ?? false;
     }
 
+    public static function canView(Model $record): bool
+    {
+        $user = auth()->user();
+
+        return (bool) $user?->active
+            && ($user->isRrhh() || $record->employee?->supervisor_user_id === $user->id);
+    }
+
     public static function canDelete(Model $record): bool
     {
         return false;
@@ -77,7 +87,7 @@ class PayrollResultResource extends Resource
             Tabs::make('Planilla')
                 ->columnSpanFull()
                 ->tabs([
-                    Tab::make('Editar planilla')
+                    Tab::make(fn (): string => auth()->user()?->isRrhh() ? 'Editar planilla' : 'Detalle de planilla')
                         ->columns(2)
                         ->schema([
                             Select::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name')->disabled(),
@@ -123,25 +133,25 @@ class PayrollResultResource extends Resource
                 TextColumn::make('employee.name')->label('Nombre empleado')->searchable()->sortable(),
                 TextColumn::make('employee.campaign.name')->label('Campaña')->sortable(),
                 TextColumn::make('employee.tierLevel.name')->label('Tier')->sortable(),
-                TextColumn::make('monthly_salary')->label('Salario mensual')->money('HNL')->sortable(),
-                TextColumn::make('biweekly_salary_amount')->label('Pago quincenal')->money('HNL')->sortable(),
-                TextColumn::make('daily_rate')->label('Pago por día')->money('HNL'),
+                TextColumn::make('monthly_salary')->label('Salario mensual')->money('HNL', locale: 'en-US')->sortable(),
+                TextColumn::make('biweekly_salary_amount')->label('Pago quincenal')->money('HNL', locale: 'en-US')->sortable(),
+                TextColumn::make('daily_rate')->label('Pago por día')->money('HNL', locale: 'en-US'),
                 TextColumn::make('worked_days')->label('Días trabajados'),
-                TextColumn::make('worked_salary_amount')->label('Salario')->money('HNL'),
+                TextColumn::make('worked_salary_amount')->label('Salario')->money('HNL', locale: 'en-US'),
                 TextColumn::make('lost_time_seconds')
                     ->label('Tiempo perdido')
                     ->state(fn (PayrollResult $record) => app(TimeParserService::class)->secondsToHourMinute((int) $record->lost_time_seconds))
                     ->alignRight(),
-                TextColumn::make('lost_time_amount')->label('Impacto tiempo perdido')->money('HNL'),
-                TextColumn::make('extra_bonuses_amount')->label('Bonos extras')->money('HNL'),
-                TextColumn::make('overtime_amount')->label('Horas extras')->money('HNL'),
-                TextColumn::make('referred_bonus_amount')->label('Bono referido')->money('HNL'),
-                TextColumn::make('adjustment_bonus_amount')->label('Ajuste')->money('HNL'),
-                TextColumn::make('extras_total_amount')->label('Ingresos extra totales')->money('HNL'),
-                TextColumn::make('gross_amount')->label('Total devengado')->money('HNL')->sortable(),
-                TextColumn::make('ihss_amount')->label('IHSS')->money('HNL')->toggleable(),
-                TextColumn::make('total_deductions_amount')->label('Total deducciones')->money('HNL')->sortable(),
-                TextColumn::make('net_amount')->label('Total a pagar')->money('HNL')->sortable(),
+                TextColumn::make('lost_time_amount')->label('Impacto tiempo perdido')->money('HNL', locale: 'en-US'),
+                TextColumn::make('extra_bonuses_amount')->label('Bonos extras')->money('HNL', locale: 'en-US'),
+                TextColumn::make('overtime_amount')->label('Horas extras')->money('HNL', locale: 'en-US'),
+                TextColumn::make('referred_bonus_amount')->label('Bono referido')->money('HNL', locale: 'en-US'),
+                TextColumn::make('adjustment_bonus_amount')->label('Ajuste')->money('HNL', locale: 'en-US'),
+                TextColumn::make('extras_total_amount')->label('Ingresos extra totales')->money('HNL', locale: 'en-US'),
+                TextColumn::make('gross_amount')->label('Total devengado')->money('HNL', locale: 'en-US')->sortable(),
+                TextColumn::make('ihss_amount')->label('IHSS')->money('HNL', locale: 'en-US')->toggleable(),
+                TextColumn::make('total_deductions_amount')->label('Total deducciones')->money('HNL', locale: 'en-US')->sortable(),
+                TextColumn::make('net_amount')->label('Total a pagar')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('status')->label('Estado')->badge()->formatStateUsing(fn (string $state) => self::statusOptions()[$state] ?? $state),
             ])
             ->filters([
@@ -151,7 +161,12 @@ class PayrollResultResource extends Resource
                 SelectFilter::make('team_id')->relationship('employee.team', 'name')->label('Team'),
             ])
             ->recordActions([
-                EditAction::make()->label('Editar'),
+                ViewAction::make()
+                    ->label('Ver detalle')
+                    ->visible(fn (PayrollResult $record): bool => self::canView($record)),
+                EditAction::make()
+                    ->label('Editar')
+                    ->visible(fn (PayrollResult $record): bool => self::canEdit($record)),
             ]);
     }
 
@@ -170,6 +185,7 @@ class PayrollResultResource extends Resource
         return [
             'index' => ListPayrollResults::route('/'),
             'create' => CreatePayrollResult::route('/create'),
+            'view' => ViewPayrollResult::route('/{record}'),
             'edit' => EditPayrollResult::route('/{record}/edit'),
         ];
     }

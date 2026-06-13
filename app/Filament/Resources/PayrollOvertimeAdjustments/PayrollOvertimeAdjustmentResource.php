@@ -142,8 +142,8 @@ class PayrollOvertimeAdjustmentResource extends Resource
                 TextColumn::make('payrollPeriod.name')->label('Período')->sortable(),
                 TextColumn::make('employee.name')->label('Empleado')->searchable()->sortable(),
                 TextColumn::make('hours')->label('Horas')->numeric()->sortable(),
-                TextColumn::make('hourly_rate')->label('Valor hora')->money('HNL'),
-                TextColumn::make('amount')->label('Monto')->money('HNL')->sortable(),
+                TextColumn::make('hourly_rate')->label('Valor hora')->money('HNL', locale: 'en-US'),
+                TextColumn::make('amount')->label('Monto')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('description')->label('Descripción')->limit(40),
                 IconColumn::make('active')->label('Activo')->boolean(),
             ])

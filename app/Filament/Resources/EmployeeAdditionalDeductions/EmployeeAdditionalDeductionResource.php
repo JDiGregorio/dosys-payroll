@@ -62,7 +62,7 @@ class EmployeeAdditionalDeductionResource extends Resource
             ->columns([
                 TextColumn::make('payrollPeriod.name')->label('Período')->sortable(),
                 TextColumn::make('employee.name')->label('Empleado')->searchable()->sortable(),
-                TextColumn::make('amount')->label('Monto')->money('HNL')->sortable(),
+                TextColumn::make('amount')->label('Monto')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('description')->label('Descripción')->searchable()->limit(40),
                 IconColumn::make('active')->label('Activo')->boolean(),
             ])

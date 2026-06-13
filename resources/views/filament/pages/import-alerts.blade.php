@@ -7,15 +7,17 @@
         </select>
 
         <div class="grid gap-8 md:grid-cols-2 xl:gap-10">
-            <x-filament::section heading="Empleados Hubstaff sin mapeo">
-                <ul class="space-y-2 text-sm leading-6">
-                    @forelse ($this->unmappedMembers() as $member)
-                        <li>{{ $member }}</li>
-                    @empty
-                        <li>Sin alertas.</li>
-                    @endforelse
-                </ul>
-            </x-filament::section>
+            @if (auth()->user()?->isRrhh())
+                <x-filament::section heading="Empleados Hubstaff sin mapeo">
+                    <ul class="space-y-2 text-sm leading-6">
+                        @forelse ($this->unmappedMembers() as $member)
+                            <li>{{ $member }}</li>
+                        @empty
+                            <li>Sin alertas.</li>
+                        @endforelse
+                    </ul>
+                </x-filament::section>
+            @endif
 
             <x-filament::section heading="Días con horas pagables menores a las esperadas">
                 <ul class="space-y-2 text-sm leading-6">
@@ -31,7 +33,7 @@
                 </ul>
             </x-filament::section>
 
-            <x-filament::section heading="Días con idle mayor a 30 minutos">
+            <x-filament::section heading="Días con idle mayor a 3 minutos">
                 <ul class="space-y-2 text-sm leading-6">
                     @forelse ($this->highIdleDays() as $review)
                         <li>

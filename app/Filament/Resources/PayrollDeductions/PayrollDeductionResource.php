@@ -66,7 +66,7 @@ class PayrollDeductionResource extends Resource
             TextColumn::make('payrollPeriod.name')->label('Período')->sortable(),
             TextColumn::make('employee.name')->label('Empleado')->searchable()->sortable(),
             TextColumn::make('deductionType.name')->label('Deducción'),
-            TextColumn::make('amount')->label('Monto')->money('HNL'),
+            TextColumn::make('amount')->label('Monto')->money('HNL', locale: 'en-US'),
             TextColumn::make('status')->label('Estado')->badge(),
         ])->filters([
             SelectFilter::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name'),
