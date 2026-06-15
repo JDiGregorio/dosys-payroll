@@ -21,6 +21,7 @@ use App\Models\Team;
 use App\Models\TierLevel;
 use App\Models\User;
 use App\Models\WorkRole;
+use Database\Seeders\ScheduleTypeSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
 use Tests\TestCase;
@@ -168,6 +169,61 @@ class FilamentPagesTest extends TestCase
         $this->assertSame(2400.0, $data['monthly_salary']);
         $this->assertSame(12.5, $data['overtime_hourly_rate']);
         $this->assertArrayNotHasKey('monthly_overtime_amount', $data);
+    }
+
+    public function test_rotating_employee_uses_ten_daily_hours_without_inflating_monthly_salary(): void
+    {
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Rotativa',
+            'code' => 'rotativa',
+            'weekly_hours' => 40,
+            'daily_hours' => 10,
+        ]);
+
+        $data = EmployeeResource::normalizeCompensation([
+            'schedule_type_id' => $schedule->id,
+            'weekly_hours' => 40,
+            'daily_hours' => 10,
+            'hourly_rate' => 10,
+            'overtime_hours' => 4,
+        ]);
+
+        $this->assertSame(10.0, (float) $data['daily_hours']);
+        $this->assertSame(2400.0, $data['monthly_salary']);
+        $this->assertSame(80.0, $data['daily_rate']);
+        $this->assertSame(12.5, $data['overtime_hourly_rate']);
+    }
+
+    public function test_schedule_seeder_moves_legacy_4x4_references_to_rotating_schedule(): void
+    {
+        $rotating = ScheduleType::query()->create([
+            'name' => 'Rotativa',
+            'code' => 'rotativa',
+        ]);
+        $legacy = ScheduleType::query()->create([
+            'name' => 'Modalidad 4x4',
+            'code' => '4x4',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado 4x4',
+            'schedule_type_id' => $legacy->id,
+        ]);
+        $tierLevel = TierLevel::query()->create([
+            'name' => 'Tier rotativo',
+            'schedule_type_id' => $legacy->id,
+        ]);
+
+        $this->seed(ScheduleTypeSeeder::class);
+
+        $this->assertDatabaseMissing('schedule_types', ['code' => '4x4']);
+        $this->assertDatabaseHas('employees', [
+            'id' => $employee->id,
+            'schedule_type_id' => $rotating->id,
+        ]);
+        $this->assertDatabaseHas('tier_levels', [
+            'id' => $tierLevel->id,
+            'schedule_type_id' => $rotating->id,
+        ]);
     }
 
     public function test_daily_review_calendar_switches_selected_employee_reviews(): void

@@ -130,18 +130,19 @@ class EmployeeResource extends Resource
                 ->preload()
                 ->live()
                 ->afterStateUpdated(function (?int $state, Get $get, Set $set): void {
-                    if (in_array(self::scheduleCode($state), ['rotativa', '4x4'], true)) {
+                    if (self::scheduleCode($state) === 'rotativa') {
                         $set('weekly_hours', 40);
+                        $set('daily_hours', 10);
                         $set('overtime_hours', 4);
                         self::syncCalculatedPayFields($get, $set);
                     }
                 })
                 ->required(),
             DatePicker::make('schedule_cycle_anchor_date')
-                ->label('Inicio del ciclo 4x4')
+                ->label('Inicio del ciclo rotativo')
                 ->helperText('Selecciona el primer día laborado de un bloque de cuatro días.')
-                ->visible(fn (Get $get) => in_array(self::scheduleCode($get('schedule_type_id')), ['rotativa', '4x4'], true))
-                ->required(fn (Get $get) => in_array(self::scheduleCode($get('schedule_type_id')), ['rotativa', '4x4'], true)),
+                ->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa')
+                ->required(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),
             Select::make('contract_type_id')->label('Tipo de contrato')->relationship('contractType', 'name')->searchable()->preload()->required(),
             Select::make('supervisor_user_id')
                 ->label('Supervisor')
@@ -261,7 +262,13 @@ class EmployeeResource extends Resource
     {
         $hourlyRate = (float) ($data['hourly_rate'] ?? 0);
         $dailyHours = (float) ($data['daily_hours'] ?? 0);
-        $monthlySalary = $dailyHours * $hourlyRate * 30;
+        $weeklyHours = (float) ($data['weekly_hours'] ?? 0);
+        $compensationDailyHours = self::compensationDailyHours(
+            (int) ($data['schedule_type_id'] ?? 0),
+            $dailyHours,
+            $weeklyHours,
+        );
+        $monthlySalary = $compensationDailyHours * $hourlyRate * 30;
         $overtimeHourlyRate = $hourlyRate * 1.25;
 
         $data['calendar_days'] = 30;
@@ -280,7 +287,12 @@ class EmployeeResource extends Resource
     private static function syncCalculatedPayFields(Get $get, Set $set): void
     {
         $hourlyRate = (float) ($get('hourly_rate') ?? 0);
-        $monthlySalary = (float) ($get('daily_hours') ?? 0) * $hourlyRate * 30;
+        $compensationDailyHours = self::compensationDailyHours(
+            (int) ($get('schedule_type_id') ?? 0),
+            (float) ($get('daily_hours') ?? 0),
+            (float) ($get('weekly_hours') ?? 0),
+        );
+        $monthlySalary = $compensationDailyHours * $hourlyRate * 30;
         $overtimeHourlyRate = $hourlyRate * 1.25;
 
         $set('calendar_days', 30);
@@ -315,9 +327,21 @@ class EmployeeResource extends Resource
     {
         return match (self::scheduleCode($scheduleTypeId)) {
             'diurna' => 'Para jornada diurna, el máximo permitido es 8 horas extra asignadas.',
-            'rotativa', '4x4' => 'La jornada 4x4 usa 40 horas ordinarias y 4 horas extra por cada bloque de cuatro días laborados.',
+            'rotativa' => 'La jornada rotativa usa 40 horas ordinarias y 4 horas extra por cada bloque de cuatro días laborados.',
             default => 'Horas extra previamente asignadas al empleado; no son monto monetario.',
         };
+    }
+
+    private static function compensationDailyHours(
+        ?int $scheduleTypeId,
+        float $dailyHours,
+        float $weeklyHours,
+    ): float {
+        if (self::scheduleCode($scheduleTypeId) === 'rotativa' && $weeklyHours > 0) {
+            return $weeklyHours / 5;
+        }
+
+        return $dailyHours;
     }
 
     private static function assignedOvertimeRule(Get $get): Closure
@@ -330,8 +354,8 @@ class EmployeeResource extends Resource
                 $fail('La jornada diurna permite máximo 8 horas extra asignadas.');
             }
 
-            if (in_array($scheduleCode, ['rotativa', '4x4'], true) && $hours !== 4.0) {
-                $fail('La jornada 4x4 debe tener exactamente 4 horas extra asignadas.');
+            if ($scheduleCode === 'rotativa' && $hours !== 4.0) {
+                $fail('La jornada rotativa debe tener exactamente 4 horas extra asignadas.');
             }
 
             if (! $get('can_work_overtime') && $hours > 0) {

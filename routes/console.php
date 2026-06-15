@@ -61,8 +61,8 @@ Artisan::command(
             return self::FAILURE;
         }
 
-        $this->info('Correcciones aplicadas: jornada 4x4 y distribución flexible de horas extra del período.');
+        $this->info('Correcciones aplicadas: jornada rotativa y distribución flexible de horas extra del período.');
 
         return self::SUCCESS;
     },
-)->purpose('Aplica la jornada 4x4 y la distribución flexible de horas extra preservando revisiones existentes.');
+)->purpose('Aplica la jornada rotativa y la distribución flexible de horas extra preservando revisiones existentes.');

@@ -1211,7 +1211,9 @@ class PayrollCalculationServiceTest extends TestCase
             $this->assertDatabaseHas('employees', [
                 'id' => $employee->id,
                 'weekly_hours' => 40,
+                'daily_hours' => 10,
                 'overtime_hours' => 4,
+                'monthly_salary' => 2400,
             ]);
         }
 

@@ -649,7 +649,7 @@ class PayrollCalculationService
             ? $employee->scheduleType?->code
             : $employee->scheduleType()->value('code');
 
-        return in_array($scheduleCode, ['rotativa', '4x4'], true)
+        return $scheduleCode === 'rotativa'
             && $employee->schedule_cycle_anchor_date !== null;
     }
 

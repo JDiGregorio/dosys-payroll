@@ -59,12 +59,11 @@ class RotatingScheduleCorrectionService
     {
         return DB::transaction(function () use ($period): array {
             $rotatingScheduleId = ScheduleType::query()
-                ->whereIn('code', ['rotativa', '4x4'])
-                ->orderByRaw("CASE WHEN code = 'rotativa' THEN 0 ELSE 1 END")
+                ->where('code', 'rotativa')
                 ->value('id');
 
             if (! $rotatingScheduleId) {
-                throw new RuntimeException('No existe una jornada Rotativa o 4x4 configurada.');
+                throw new RuntimeException('No existe una jornada Rotativa configurada.');
             }
 
             $previewByEmployee = collect($this->preview($period))->keyBy('employee_id');
@@ -82,6 +81,7 @@ class RotatingScheduleCorrectionService
                     'schedule_type_id' => $rotatingScheduleId,
                     'schedule_cycle_anchor_date' => $definition['anchor_date'],
                     'weekly_hours' => 40,
+                    'daily_hours' => 10,
                     'overtime_hours' => 4,
                     'can_work_overtime' => true,
                 ]);
