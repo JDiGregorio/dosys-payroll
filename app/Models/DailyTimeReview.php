@@ -15,6 +15,7 @@ class DailyTimeReview extends Model
             'date' => 'date',
             'activity_percentage' => 'decimal:2',
             'idle_percentage' => 'decimal:2',
+            'scheduled_work_day' => 'boolean',
             'assigned_overtime_fulfilled' => 'boolean',
             'paid_day_off' => 'boolean',
         ];

@@ -6,7 +6,6 @@ use App\Filament\Pages\DailyReviewCalendar;
 use App\Filament\Resources\DailyTimeReviews\DailyTimeReviewResource;
 use App\Services\PayrollCalculationService;
 use Filament\Actions\Action;
-use Filament\Actions\DeleteAction;
 use Filament\Resources\Pages\EditRecord;
 
 class EditDailyTimeReview extends EditRecord
@@ -15,9 +14,7 @@ class EditDailyTimeReview extends EditRecord
 
     protected function getHeaderActions(): array
     {
-        return [
-            DeleteAction::make()->label('Eliminar'),
-        ];
+        return [];
     }
 
     protected function mutateFormDataBeforeFill(array $data): array

@@ -30,7 +30,7 @@ class PayrollStatsOverview extends StatsOverviewWidget
 
         return array_values(array_filter([
             $user?->isRrhh()
-                ? Stat::make('Empleados sin mapeo', HubstaffTimeEntry::query()->where('payroll_period_id', $period->id)->whereNull('employee_id')->distinct('hubstaff_member')->count('hubstaff_member'))
+                ? Stat::make('Empleados sin mapeo', HubstaffTimeEntry::query()->where('payroll_period_id', $period->id)->where('active', true)->whereNull('employee_id')->distinct('hubstaff_member')->count('hubstaff_member'))
                 : null,
             Stat::make('Revisiones pendientes', (clone $reviewQuery)->where('status', 'pendiente')->count()),
             Stat::make('Revisiones aplicadas', (clone $reviewQuery)->whereIn('status', ['revisado_supervisor', 'aprobado_rrhh'])->count()),

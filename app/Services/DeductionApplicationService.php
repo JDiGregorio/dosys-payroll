@@ -15,10 +15,6 @@ class DeductionApplicationService
     {
         $deductionTypeIds = $period->deductionTypes()->pluck('deduction_types.id');
 
-        PayrollDeduction::query()
-            ->where('payroll_period_id', $period->id)
-            ->delete();
-
         if ($period->apply_deductions) {
             Employee::query()
                 ->where('active', true)
@@ -68,7 +64,7 @@ class DeductionApplicationService
                 continue;
             }
 
-            PayrollDeduction::query()->updateOrCreate([
+            PayrollDeduction::query()->firstOrCreate([
                 'payroll_period_id' => $period->id,
                 'employee_id' => $employee->id,
                 'deduction_type_id' => $type->id,
@@ -93,7 +89,7 @@ class DeductionApplicationService
             ->where('active', true)
             ->get()
             ->each(function (EmployeeAdditionalDeduction $deduction) use ($period, $type): void {
-                PayrollDeduction::query()->updateOrCreate([
+                PayrollDeduction::query()->firstOrCreate([
                     'payroll_period_id' => $period->id,
                     'employee_id' => $deduction->employee_id,
                     'deduction_type_id' => $type->id,

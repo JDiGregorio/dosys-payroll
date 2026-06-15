@@ -35,6 +35,10 @@ class EmployeesImport implements ToCollection, WithHeadingRow
                 $overtimeHours = $this->number($data, ['horas_extras', 'overtime_hours']);
                 $hourlyRate = $this->number($data, ['salario_base_por_hora_por_nivel', 'hourly_rate']);
                 $overtimeHourlyRate = $hourlyRate * 1.25;
+                $monthlySalary = $this->number($data, ['salario_mensual', 'monthly_salary'])
+                    ?: round($dailyHours * $hourlyRate * 30, 2);
+                $semiMonthlySalary = $this->number($data, ['salario_quincenal', 'pago_quincenal', 'semi_monthly_salary'])
+                    ?: round($monthlySalary / 2, 2);
                 $dni = $this->string($data, ['dni', 'referencia_id', 'referencia']);
                 $bankAccountNumber = $this->string($data, ['no_cuenta', 'numero_de_cuenta', 'numero_cuenta', 'bank_account_number']);
 
@@ -50,13 +54,18 @@ class EmployeesImport implements ToCollection, WithHeadingRow
                     'contract_type_id' => $this->contractTypeId($weeklyHours, $tierLevelId),
                     'schedule_type_name_snapshot' => $this->string($data, ['tipo_de_jornada', 'schedule_type']),
                     'weekly_hours' => $weeklyHours,
+                    'ordinary_weekly_hours' => $weeklyHours,
                     'daily_hours' => $dailyHours,
                     'overtime_hours' => $overtimeHours,
+                    'preassigned_overtime_weekly_hours' => $overtimeHours,
                     'hourly_rate' => $hourlyRate,
                     'calendar_days' => 30,
-                    'monthly_salary' => round($dailyHours * $hourlyRate * 30, 2),
-                    'daily_rate' => round($dailyHours * $hourlyRate, 4),
+                    'monthly_salary' => $monthlySalary,
+                    'semi_monthly_salary' => $semiMonthlySalary,
+                    'daily_rate' => $this->number($data, ['pago_por_dia', 'daily_rate']) ?: round($monthlySalary / 30, 4),
                     'overtime_hourly_rate' => round($overtimeHourlyRate, 4),
+                    'salary_calculation_method' => $this->string($data, ['salary_calculation_method']) ?: 'hourly_actual_hours',
+                    'salary_values_are_manual' => true,
                     'base_salary' => $this->number($data, ['salario_base', 'base_salary']),
                     'expected_days' => $this->number($data, ['dias', 'days']),
                     'expected_total' => $this->number($data, ['total']),
@@ -75,7 +84,28 @@ class EmployeesImport implements ToCollection, WithHeadingRow
                     $employeeData['bank_account_number'] = $bankAccountNumber;
                 }
 
-                Employee::query()->updateOrCreate(['name' => $name], $employeeData);
+                $employee = Employee::query()->firstOrNew(['name' => $name]);
+
+                if ($employee->exists) {
+                    foreach ([
+                        'weekly_hours',
+                        'ordinary_weekly_hours',
+                        'daily_hours',
+                        'overtime_hours',
+                        'preassigned_overtime_weekly_hours',
+                        'hourly_rate',
+                        'monthly_salary',
+                        'semi_monthly_salary',
+                        'daily_rate',
+                        'overtime_hourly_rate',
+                        'salary_calculation_method',
+                        'salary_values_are_manual',
+                    ] as $manualField) {
+                        unset($employeeData[$manualField]);
+                    }
+                }
+
+                $employee->fill($employeeData)->save();
             }
         });
     }

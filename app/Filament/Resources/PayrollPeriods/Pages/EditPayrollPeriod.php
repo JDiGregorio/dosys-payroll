@@ -37,8 +37,7 @@ class EditPayrollPeriod extends EditRecord
 
         if ($this->record->status !== 'cerrado' && $this->record->hubstaffTimeEntries()->exists()) {
             $service = app(PayrollCalculationService::class);
-            $service->generateDailyReviews($this->record);
-            $service->recalculatePayrollResults($this->record);
+            $service->recalculatePeriodPreservingManual($this->record);
         }
     }
 }

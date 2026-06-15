@@ -105,7 +105,7 @@ class PayrollPeriodResource extends Resource
                 TextColumn::make('status')->label('Estado')->badge()->formatStateUsing(fn (string $state) => self::statusOptions()[$state] ?? $state),
                 TextColumn::make('employees_count')->label('Empleados')->state(fn () => Employee::query()->count()),
                 TextColumn::make('payroll_results_count')->label('Planillas calculadas'),
-                TextColumn::make('unmapped')->label('Sin mapeo')->state(fn (PayrollPeriod $record) => HubstaffTimeEntry::query()->where('payroll_period_id', $record->id)->whereNull('employee_id')->distinct('hubstaff_member')->count('hubstaff_member')),
+                TextColumn::make('unmapped')->label('Sin mapeo')->state(fn (PayrollPeriod $record) => HubstaffTimeEntry::query()->where('payroll_period_id', $record->id)->where('active', true)->whereNull('employee_id')->distinct('hubstaff_member')->count('hubstaff_member')),
             ])
             ->recordActions([
                 self::exportPayrollAction(),
@@ -128,7 +128,7 @@ class PayrollPeriodResource extends Resource
             ->icon('heroicon-o-arrow-up-tray')
             ->requiresConfirmation()
             ->modalDescription(fn (PayrollPeriod $record) => $record->hubstaffTimeEntries()->exists()
-                ? 'Se reemplazarán los registros Hubstaff y las revisiones diarias de este período. Bonos, deducciones y horas extra adicionales se conservarán.'
+                ? 'Se importará una nueva versión. Los registros anteriores quedarán como historial inactivo y se conservarán revisiones, comentarios, bonos, deducciones y aprobaciones.'
                 : 'El archivo debe contener únicamente fechas dentro del período seleccionado.')
             ->form([
                 FileUpload::make('file')->label('Archivo CSV')->required()->acceptedFileTypes(['text/csv', 'text/plain']),
@@ -143,21 +143,25 @@ class PayrollPeriodResource extends Resource
 
                 try {
                     DB::transaction(function () use ($record, $data, $import, $service): void {
-                        $record->hubstaffTimeEntries()->delete();
-                        $record->dailyTimeReviews()->delete();
-                        $record->payrollResults()->delete();
+                        $previousEntryIds = $record->hubstaffTimeEntries()
+                            ->where('active', true)
+                            ->pluck('id');
 
                         Excel::import(
                             new HubstaffTimeEntriesImport($record, $import),
                             Storage::disk('local')->path($data['file']),
                         );
 
-                        $service->generateDailyReviews($record);
-                        $service->recalculatePayrollResults($record);
-                        $record->update(['status' => 'en_revision']);
+                        if ($previousEntryIds->isNotEmpty()) {
+                            HubstaffTimeEntry::query()
+                                ->whereKey($previousEntryIds)
+                                ->update(['active' => false]);
+                        }
+
+                        $service->recalculatePeriodPreservingManual($record);
                     });
 
-                    Notification::make()->title('CSV importado, revisión diaria generada y planilla recalculada')->success()->send();
+                    Notification::make()->title('CSV importado y cálculos actualizados sin borrar revisiones manuales')->success()->send();
                 } catch (Throwable $exception) {
                     $import->update(['status' => 'failed', 'error_message' => $exception->getMessage()]);
                     throw $exception;
@@ -184,16 +188,17 @@ class PayrollPeriodResource extends Resource
     public static function recalculatePayrollAction(): Action
     {
         return Action::make('recalculatePayroll')
-            ->label('Calcular planilla')
-            ->icon('heroicon-o-calculator')
+            ->label('Actualizar cálculos del período')
+            ->icon('heroicon-o-arrow-path')
             ->requiresConfirmation()
+            ->modalDescription('Se actualizarán horas esperadas, horas pagables y planilla calculada. Se preservarán justificaciones, comentarios, bonos, deducciones, estados y aprobaciones manuales.')
             ->action(function (PayrollPeriod $record, PayrollCalculationService $service): void {
-                DB::transaction(function () use ($record, $service): void {
-                    $service->generateDailyReviews($record);
-                    $service->recalculatePayrollResults($record);
-                    $record->update(['status' => 'en_revision']);
-                });
-                Notification::make()->title('Planilla calculada')->success()->send();
+                $service->recalculatePeriodPreservingManual($record);
+                Notification::make()
+                    ->title('Cálculos del período actualizados')
+                    ->body('Se preservaron las justificaciones y demás datos manuales.')
+                    ->success()
+                    ->send();
             })
             ->visible(fn (PayrollPeriod $record) => (auth()->user()?->isRrhh() ?? false) && $record->status !== 'cerrado');
     }
@@ -211,6 +216,7 @@ class PayrollPeriodResource extends Resource
                     ->label('Empleado sin mapeo')
                     ->options(fn (PayrollPeriod $record) => HubstaffTimeEntry::query()
                         ->where('payroll_period_id', $record->id)
+                        ->where('active', true)
                         ->whereNull('employee_id')
                         ->whereNotNull('hubstaff_member')
                         ->distinct()
@@ -251,6 +257,7 @@ class PayrollPeriodResource extends Resource
                 && $record->status !== 'cerrado'
                 && HubstaffTimeEntry::query()
                     ->where('payroll_period_id', $record->id)
+                    ->where('active', true)
                     ->whereNull('employee_id')
                     ->exists());
     }
@@ -288,13 +295,22 @@ class PayrollPeriodResource extends Resource
             ->icon('heroicon-o-lock-closed')
             ->requiresConfirmation()
             ->action(function (PayrollPeriod $record, PayrollCalculationService $service): void {
-                if (HubstaffTimeEntry::query()->where('payroll_period_id', $record->id)->whereNull('employee_id')->exists()) {
+                if (HubstaffTimeEntry::query()->where('payroll_period_id', $record->id)->where('active', true)->whereNull('employee_id')->exists()) {
                     Notification::make()->title('No se puede cerrar: hay registros Hubstaff sin mapeo')->danger()->send();
 
                     return;
                 }
 
-                $service->recalculatePayrollResults($record);
+                if ($record->dailyTimeReviews()
+                    ->whereBetween('date', [$record->starts_at, $record->ends_at])
+                    ->where('status', 'pendiente')
+                    ->exists()) {
+                    Notification::make()->title('No se puede cerrar: hay revisiones diarias pendientes')->danger()->send();
+
+                    return;
+                }
+
+                $service->recalculatePeriodPreservingManual($record);
 
                 $record->update(['status' => 'cerrado']);
                 Notification::make()->title('Período cerrado')->success()->send();

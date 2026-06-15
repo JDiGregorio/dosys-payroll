@@ -17,6 +17,7 @@ class DatabaseSeeder extends Seeder
             DepartmentSeeder::class,
             WorkRoleSeeder::class,
             ScheduleTypeSeeder::class,
+            WorkScheduleTemplateSeeder::class,
             ContractTypeSeeder::class,
             HourlyRateTypeSeeder::class,
             TierLevelSeeder::class,

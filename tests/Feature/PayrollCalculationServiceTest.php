@@ -16,7 +16,11 @@ use App\Models\PayrollOvertimeAdjustment;
 use App\Models\PayrollPeriod;
 use App\Models\ScheduleType;
 use App\Models\Team;
+use App\Models\User;
+use App\Models\WorkScheduleTemplate;
 use App\Services\PayrollCalculationService;
+use Carbon\Carbon;
+use Carbon\CarbonPeriod;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Tests\TestCase;
@@ -97,7 +101,7 @@ class PayrollCalculationServiceTest extends TestCase
         ]);
     }
 
-    public function test_idle_is_kept_as_reported_without_justification(): void
+    public function test_recalculation_preserves_existing_idle_classification(): void
     {
         $period = PayrollPeriod::query()->create([
             'name' => 'May 2026',
@@ -121,9 +125,9 @@ class PayrollCalculationServiceTest extends TestCase
 
         $review->refresh();
 
-        $this->assertSame(0, $review->justified_idle_seconds);
-        $this->assertSame(1800, $review->unjustified_idle_seconds);
-        $this->assertSame(1800, $review->pending_idle_seconds);
+        $this->assertSame(1500, $review->justified_idle_seconds);
+        $this->assertSame(1500, $review->unjustified_idle_seconds);
+        $this->assertSame(0, $review->pending_idle_seconds);
     }
 
     public function test_team_bonus_and_deductions_are_included_in_net_amount(): void
@@ -233,7 +237,7 @@ class PayrollCalculationServiceTest extends TestCase
         $this->assertDatabaseHas('daily_time_reviews', [
             'id' => $blankReview->id,
             'paid_day_off' => true,
-            'unjustified_absence_seconds' => 0,
+            'unjustified_absence_seconds' => 28800,
             'payable_seconds' => 28800,
         ]);
         $this->assertDatabaseHas('payroll_results', [
@@ -395,7 +399,7 @@ class PayrollCalculationServiceTest extends TestCase
             'date' => '2026-05-01',
             'expected_seconds' => 28800,
             'assigned_overtime_seconds' => 0,
-            'assigned_overtime_fulfilled' => true,
+            'assigned_overtime_fulfilled' => false,
             'hubstaff_total_seconds' => 32400,
             'payable_seconds' => 32400,
         ]);
@@ -942,10 +946,12 @@ class PayrollCalculationServiceTest extends TestCase
             'schedule_type_id' => $schedule->id,
             'schedule_cycle_anchor_date' => '2026-05-26',
             'weekly_hours' => 40,
-            'daily_hours' => 8,
+            'ordinary_weekly_hours' => 40,
+            'daily_hours' => 10,
             'hourly_rate' => 10,
             'monthly_salary' => 2400,
             'overtime_hours' => 4,
+            'preassigned_overtime_weekly_hours' => 4,
             'overtime_hourly_rate' => 12.5,
         ]);
         foreach (range(26, 29) as $day) {
@@ -968,7 +974,7 @@ class PayrollCalculationServiceTest extends TestCase
             'date' => '2026-05-26 00:00:00',
             'expected_seconds' => 36000,
             'assigned_overtime_seconds' => 3600,
-            'assigned_overtime_fulfilled' => true,
+            'assigned_overtime_fulfilled' => false,
             'difference_seconds' => 0,
             'payable_seconds' => 39600,
         ]);
@@ -1012,10 +1018,12 @@ class PayrollCalculationServiceTest extends TestCase
             'schedule_type_id' => $schedule->id,
             'schedule_cycle_anchor_date' => '2026-05-26',
             'weekly_hours' => 40,
-            'daily_hours' => 8,
+            'ordinary_weekly_hours' => 40,
+            'daily_hours' => 10,
             'hourly_rate' => 10,
             'monthly_salary' => 2400,
             'overtime_hours' => 4,
+            'preassigned_overtime_weekly_hours' => 4,
             'overtime_hourly_rate' => 12.5,
         ]);
         HubstaffTimeEntry::query()->create([
@@ -1035,7 +1043,7 @@ class PayrollCalculationServiceTest extends TestCase
             ->where('employee_id', $employee->id)
             ->firstOrFail();
 
-        $this->assertSame(1800, (int) $review->unjustified_absence_seconds);
+        $this->assertSame(0, (int) $review->unjustified_absence_seconds);
         $this->assertSame(37800, (int) $review->payable_seconds);
         $this->assertDatabaseHas('payroll_results', [
             'payroll_period_id' => $period->id,
@@ -1057,7 +1065,7 @@ class PayrollCalculationServiceTest extends TestCase
         $this->assertDatabaseHas('daily_time_reviews', [
             'id' => $review->id,
             'payable_seconds' => 37800,
-            'unjustified_absence_seconds' => 1800,
+            'unjustified_absence_seconds' => 0,
         ]);
         $this->assertDatabaseHas('payroll_results', [
             'payroll_period_id' => $period->id,
@@ -1091,7 +1099,7 @@ class PayrollCalculationServiceTest extends TestCase
         ]);
     }
 
-    public function test_rotating_schedule_command_only_resets_the_four_target_employees(): void
+    public function test_rotating_schedule_command_preserves_existing_manual_reviews(): void
     {
         $schedule = ScheduleType::query()->create([
             'name' => 'Rotativa',
@@ -1192,10 +1200,10 @@ class PayrollCalculationServiceTest extends TestCase
 
         $this->assertDatabaseHas('daily_time_reviews', [
             'id' => $targetReview->id,
-            'status' => 'pendiente',
-            'justified_absence_seconds' => 0,
-            'supervisor_comment' => null,
-            'expected_seconds' => 36000,
+            'status' => 'revisado_supervisor',
+            'justified_absence_seconds' => 600,
+            'supervisor_comment' => 'Se debe reiniciar',
+            'expected_seconds' => 39600,
             'assigned_overtime_seconds' => 3600,
         ]);
         $this->assertDatabaseHas('daily_time_reviews', [
@@ -1210,9 +1218,11 @@ class PayrollCalculationServiceTest extends TestCase
         foreach ($targets as $employee) {
             $this->assertDatabaseHas('employees', [
                 'id' => $employee->id,
-                'weekly_hours' => 40,
-                'daily_hours' => 10,
+                'weekly_hours' => 44,
+                'ordinary_weekly_hours' => 44,
+                'daily_hours' => 11,
                 'overtime_hours' => 4,
+                'preassigned_overtime_weekly_hours' => 4,
                 'monthly_salary' => 2400,
             ]);
         }
@@ -1222,5 +1232,491 @@ class PayrollCalculationServiceTest extends TestCase
             'schedule_cycle_anchor_date' => '2026-05-25 00:00:00',
             'monthly_salary' => 2400,
         ]);
+    }
+
+    public function test_day_schedule_template_uses_exact_daily_pattern_instead_of_weekly_division(): void
+    {
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Diurna',
+            'code' => 'diurna',
+            'active' => true,
+        ]);
+        $fortyHourTemplate = $this->createTemplate('Diurna 40h test', 'diurna', [8, 8, 8, 8, 8]);
+        $variableTemplate = $this->createTemplate('Diurna 36h test', 'diurna', [7, 7, 7, 7, 8]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Patrones diurnos',
+            'starts_at' => '2026-05-01',
+            'ends_at' => '2026-05-04',
+        ]);
+        $fortyHourEmployee = Employee::query()->create([
+            'name' => 'Diurno 40h',
+            'schedule_type_id' => $schedule->id,
+            'work_schedule_template_id' => $fortyHourTemplate->id,
+            'ordinary_weekly_hours' => 40,
+            'daily_hours' => 8,
+        ]);
+        $variableEmployee = Employee::query()->create([
+            'name' => 'Diurno 36h',
+            'schedule_type_id' => $schedule->id,
+            'work_schedule_template_id' => $variableTemplate->id,
+            'ordinary_weekly_hours' => 36,
+            'daily_hours' => 0,
+        ]);
+
+        app(PayrollCalculationService::class)->generateDailyReviews($period);
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $fortyHourEmployee->id,
+            'date' => '2026-05-01 00:00:00',
+            'expected_ordinary_seconds' => 28800,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $variableEmployee->id,
+            'date' => '2026-05-01 00:00:00',
+            'expected_ordinary_seconds' => 28800,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $variableEmployee->id,
+            'date' => '2026-05-04 00:00:00',
+            'expected_ordinary_seconds' => 25200,
+        ]);
+    }
+
+    public function test_rotating_four_by_four_only_expects_scheduled_work_days(): void
+    {
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Rotativa',
+            'code' => 'rotativa',
+            'active' => true,
+        ]);
+        $template = $this->createTemplate('Rotativa 4x4 test', 'rotativa', [11, 11, 11, 11]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Ciclo 4x4',
+            'starts_at' => '2026-05-26',
+            'ends_at' => '2026-06-02',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Rotativo 4x4',
+            'schedule_type_id' => $schedule->id,
+            'work_schedule_template_id' => $template->id,
+            'schedule_cycle_anchor_date' => '2026-05-26',
+            'rotation_work_days' => 4,
+            'rotation_rest_days' => 4,
+            'daily_hours' => 11,
+        ]);
+
+        app(PayrollCalculationService::class)->generateDailyReviews($period);
+
+        $reviews = DailyTimeReview::query()
+            ->where('employee_id', $employee->id)
+            ->orderBy('date')
+            ->get();
+
+        $this->assertSame(4, $reviews->where('scheduled_work_day', true)->count());
+        $this->assertSame(4, $reviews->where('scheduled_work_day', false)->count());
+        $this->assertSame(158400, (int) $reviews->sum('expected_ordinary_seconds'));
+    }
+
+    public function test_employee_schedule_assignment_overrides_employee_fallback_for_its_date_range(): void
+    {
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Diurna',
+            'code' => 'diurna',
+            'active' => true,
+        ]);
+        $template = $this->createTemplate('Asignación 36h test', 'diurna', [7, 7, 7, 7, 8]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Asignación histórica',
+            'starts_at' => '2026-05-04',
+            'ends_at' => '2026-05-04',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado con asignación',
+            'schedule_type_id' => $schedule->id,
+            'daily_hours' => 8,
+        ]);
+        $employee->scheduleAssignments()->create([
+            'work_schedule_template_id' => $template->id,
+            'starts_at' => '2026-05-01',
+            'ends_at' => '2026-05-31',
+            'active' => true,
+        ]);
+
+        app(PayrollCalculationService::class)->generateDailyReviews($period);
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $employee->id,
+            'date' => '2026-05-04 00:00:00',
+            'expected_ordinary_seconds' => 25200,
+        ]);
+    }
+
+    public function test_rotating_fixed_salary_uses_employee_values_and_preassigned_overtime(): void
+    {
+        [$period, $employee] = $this->createRotatingFixedSalaryScenario(
+            name: 'Elalf test',
+            monthlySalary: 14200,
+            semiMonthlySalary: 7100,
+            hourlyRate: 59.20,
+            overtimeRate: 74.00,
+        );
+
+        app(PayrollCalculationService::class)->recalculatePeriodPreservingManual($period);
+
+        $this->assertDatabaseHas('payroll_results', [
+            'employee_id' => $employee->id,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'scheduled_days' => 8,
+            'worked_salary_amount' => 7100,
+            'preassigned_overtime_seconds' => 28800,
+            'overtime_amount' => 592,
+            'gross_amount' => 7692,
+            'lost_time_seconds' => 0,
+        ]);
+    }
+
+    public function test_rotating_fixed_salary_never_uses_another_employees_salary(): void
+    {
+        [$firstPeriod] = $this->createRotatingFixedSalaryScenario(
+            name: 'Elalf reference',
+            monthlySalary: 14200,
+            semiMonthlySalary: 7100,
+            hourlyRate: 59.20,
+            overtimeRate: 74.00,
+            periodName: 'Primer rotativo',
+            startsAt: '2026-05-01',
+            endsAt: '2026-05-16',
+        );
+        [$secondPeriod, $employee] = $this->createRotatingFixedSalaryScenario(
+            name: 'Rotativo salario distinto',
+            monthlySalary: 16500,
+            semiMonthlySalary: 8250,
+            hourlyRate: 68.75,
+            overtimeRate: 85.9375,
+            periodName: 'Segundo rotativo',
+            startsAt: '2026-06-01',
+            endsAt: '2026-06-16',
+        );
+
+        $service = app(PayrollCalculationService::class);
+        $service->recalculatePeriodPreservingManual($firstPeriod);
+        $service->recalculatePeriodPreservingManual($secondPeriod);
+
+        $this->assertDatabaseHas('payroll_results', [
+            'employee_id' => $employee->id,
+            'monthly_salary' => 16500,
+            'biweekly_salary_amount' => 8250,
+            'worked_salary_amount' => 8250,
+            'overtime_amount' => 687.5,
+            'gross_amount' => 8937.5,
+        ]);
+    }
+
+    public function test_paid_lunch_not_tracked_is_added_once_to_rotating_payable_time(): void
+    {
+        [$period, $employee] = $this->createRotatingFixedSalaryScenario(
+            name: 'Rotativo lunch',
+            monthlySalary: 12000,
+            semiMonthlySalary: 6000,
+            hourlyRate: 50,
+            overtimeRate: 62.5,
+            periodName: 'Un día rotativo',
+            startsAt: '2026-05-26',
+            endsAt: '2026-05-26',
+            preassignedPeriodHours: 1,
+        );
+
+        app(PayrollCalculationService::class)->recalculatePeriodPreservingManual($period);
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $employee->id,
+            'hubstaff_total_seconds' => 39600,
+            'paid_time_not_tracked_seconds' => 3600,
+            'expected_hubstaff_seconds' => 39600,
+            'expected_paid_seconds' => 43200,
+            'payable_seconds' => 43200,
+        ]);
+    }
+
+    public function test_justified_rotating_absence_pays_only_ordinary_time_without_lunch_or_overtime(): void
+    {
+        [$period, $employee] = $this->createRotatingFixedSalaryScenario(
+            name: 'Rotativo ausencia justificada',
+            monthlySalary: 14200,
+            semiMonthlySalary: 7100,
+            hourlyRate: 59.20,
+            overtimeRate: 74,
+            periodName: 'Ausencia rotativa',
+            startsAt: '2026-05-26',
+            endsAt: '2026-05-26',
+            preassignedPeriodHours: 1,
+            createHubstaffEntries: false,
+        );
+
+        $service = app(PayrollCalculationService::class);
+        $service->generateDailyReviews($period);
+        $review = DailyTimeReview::query()
+            ->where('employee_id', $employee->id)
+            ->where('payroll_period_id', $period->id)
+            ->firstOrFail();
+        $review->update([
+            'justified_absence_seconds' => 39600,
+            'unjustified_absence_seconds' => 0,
+            'status' => 'revisado_supervisor',
+        ]);
+
+        $service->recalculateDailyReview($review->fresh());
+        $service->recalculateEmployeePayrollResult($period, $employee);
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'id' => $review->id,
+            'paid_time_not_tracked_seconds' => 3600,
+            'payable_seconds' => 39600,
+        ]);
+        $this->assertDatabaseHas('payroll_results', [
+            'employee_id' => $employee->id,
+            'worked_salary_amount' => 7100,
+            'preassigned_overtime_seconds' => 0,
+            'overtime_amount' => 0,
+            'lost_time_seconds' => 0,
+        ]);
+    }
+
+    public function test_fractional_preassigned_overtime_is_paid_proportionally(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Extra fraccionada',
+            'starts_at' => '2026-05-04',
+            'ends_at' => '2026-05-04',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado media hora extra',
+            'daily_hours' => 8,
+            'ordinary_weekly_hours' => 40,
+            'preassigned_overtime_weekly_hours' => 0.5,
+            'hourly_rate' => 10,
+            'overtime_hourly_rate' => 12.5,
+        ]);
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'hubstaff_member' => $employee->name,
+            'date' => '2026-05-04',
+            'total_seconds' => 30600,
+        ]);
+
+        app(PayrollCalculationService::class)->recalculatePeriodPreservingManual($period);
+
+        $this->assertDatabaseHas('payroll_results', [
+            'employee_id' => $employee->id,
+            'preassigned_overtime_seconds' => 1800,
+            'overtime_amount' => 6.25,
+        ]);
+    }
+
+    public function test_recalculate_period_command_preserves_all_existing_manual_records(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Período editado',
+            'starts_at' => '2026-05-01',
+            'ends_at' => '2026-05-01',
+            'status' => 'en_revision',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado revisado',
+            'daily_hours' => 8,
+            'hourly_rate' => 10,
+        ]);
+        $entry = HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'hubstaff_member' => $employee->name,
+            'date' => '2026-05-01',
+            'total_seconds' => 27000,
+            'idle_seconds' => 600,
+        ]);
+
+        $service = app(PayrollCalculationService::class);
+        $service->generateDailyReviews($period);
+        $review = DailyTimeReview::query()->firstOrFail();
+        $supervisor = User::query()->create([
+            'name' => 'Supervisor prueba',
+            'email' => 'supervisor-preserve@example.com',
+            'password' => 'password',
+            'profile' => 'supervisor',
+        ]);
+        $rrhh = User::query()->create([
+            'name' => 'RRHH prueba',
+            'email' => 'rrhh-preserve@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+        ]);
+        $review->update([
+            'justified_idle_seconds' => 300,
+            'unjustified_idle_seconds' => 300,
+            'justified_absence_seconds' => 1800,
+            'unjustified_absence_seconds' => 0,
+            'approved_overtime_seconds' => 900,
+            'supervisor_comment' => 'Validado por supervisor',
+            'rrhh_comment' => 'Aprobado por RRHH',
+            'status' => 'aprobado_rrhh',
+            'reviewed_by' => $supervisor->id,
+            'approved_by' => $rrhh->id,
+        ]);
+        $bonus = PayrollBonus::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'scope_type' => 'employee',
+            'type' => 'manual',
+            'amount' => 75,
+            'status' => 'aprobado',
+            'description' => 'Bono manual preservado',
+        ]);
+        $deductionType = DeductionType::query()->create([
+            'name' => 'Deducción manual',
+            'code' => 'manual_preserved',
+            'calculation_type' => 'fixed',
+        ]);
+        $deduction = PayrollDeduction::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'deduction_type_id' => $deductionType->id,
+            'amount' => 25,
+            'status' => 'aprobado',
+            'description' => 'Deducción preservada',
+        ]);
+        $reviewState = $review->fresh()->getAttributes();
+        $entryState = $entry->fresh()->getAttributes();
+        $bonusState = $bonus->fresh()->getAttributes();
+        $deductionState = $deduction->fresh()->getAttributes();
+
+        $exitCode = Artisan::call('payroll:recalculate-period', [
+            'period_id' => $period->id,
+            '--preserve-manual' => true,
+        ]);
+
+        $this->assertSame(0, $exitCode, Artisan::output());
+        $this->assertSame($entryState, $entry->fresh()->getAttributes());
+        $this->assertSame($bonusState, $bonus->fresh()->getAttributes());
+        $this->assertSame($deductionState, $deduction->fresh()->getAttributes());
+
+        foreach ([
+            'justified_idle_seconds',
+            'unjustified_idle_seconds',
+            'justified_absence_seconds',
+            'unjustified_absence_seconds',
+            'approved_overtime_seconds',
+            'supervisor_comment',
+            'rrhh_comment',
+            'status',
+            'reviewed_by',
+            'approved_by',
+        ] as $field) {
+            $this->assertSame($reviewState[$field], $review->fresh()->getAttribute($field));
+        }
+    }
+
+    /**
+     * @param  array<int, float|int>  $hours
+     */
+    private function createTemplate(string $name, string $scheduleType, array $hours): WorkScheduleTemplate
+    {
+        $template = WorkScheduleTemplate::query()->create([
+            'name' => $name,
+            'schedule_type' => $scheduleType,
+            'active' => true,
+        ]);
+
+        foreach ($hours as $index => $dailyHours) {
+            $template->days()->create([
+                'day_number' => $index + 1,
+                'expected_seconds' => (int) round($dailyHours * 3600),
+                'is_working_day' => true,
+            ]);
+        }
+
+        return $template;
+    }
+
+    /**
+     * @return array{PayrollPeriod, Employee}
+     */
+    private function createRotatingFixedSalaryScenario(
+        string $name,
+        float $monthlySalary,
+        float $semiMonthlySalary,
+        float $hourlyRate,
+        float $overtimeRate,
+        string $periodName = 'Rotativo fijo',
+        string $startsAt = '2026-05-26',
+        string $endsAt = '2026-06-10',
+        float $preassignedPeriodHours = 8,
+        bool $createHubstaffEntries = true,
+    ): array {
+        $schedule = ScheduleType::query()->firstOrCreate(
+            ['code' => 'rotativa'],
+            ['name' => 'Rotativa', 'active' => true],
+        );
+        $template = WorkScheduleTemplate::query()->firstOrCreate(
+            ['name' => 'Rotativa 4x4 fixture'],
+            ['schedule_type' => 'rotativa', 'active' => true],
+        );
+
+        if ($template->days()->doesntExist()) {
+            foreach (range(1, 4) as $dayNumber) {
+                $template->days()->create([
+                    'day_number' => $dayNumber,
+                    'expected_seconds' => 39600,
+                    'is_working_day' => true,
+                ]);
+            }
+        }
+
+        $period = PayrollPeriod::query()->create([
+            'name' => $periodName,
+            'starts_at' => $startsAt,
+            'ends_at' => $endsAt,
+            'status' => 'en_revision',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => $name,
+            'schedule_type_id' => $schedule->id,
+            'work_schedule_template_id' => $template->id,
+            'schedule_cycle_anchor_date' => $startsAt,
+            'rotation_work_days' => 4,
+            'rotation_rest_days' => 4,
+            'ordinary_weekly_hours' => 44,
+            'daily_hours' => 11,
+            'preassigned_overtime_weekly_hours' => 4,
+            'preassigned_overtime_period_hours' => $preassignedPeriodHours,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'monthly_salary' => $monthlySalary,
+            'semi_monthly_salary' => $semiMonthlySalary,
+            'hourly_rate' => $hourlyRate,
+            'overtime_hourly_rate' => $overtimeRate,
+            'hubstaff_expected_hours_per_workday' => 11,
+            'paid_hours_per_workday' => 12,
+            'paid_lunch_minutes_per_workday' => 60,
+            'lunch_included_in_hubstaff_total' => false,
+            'breaks_included_in_hubstaff_total' => true,
+        ]);
+
+        foreach (CarbonPeriod::create($startsAt, $endsAt) as $date) {
+            $cycleDay = $date->diffInDays(Carbon::parse($startsAt)) % 8;
+
+            if (! $createHubstaffEntries || $cycleDay >= 4) {
+                continue;
+            }
+
+            HubstaffTimeEntry::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'hubstaff_member' => $employee->name,
+                'date' => $date->toDateString(),
+                'total_seconds' => 39600,
+            ]);
+        }
+
+        return [$period, $employee];
     }
 }

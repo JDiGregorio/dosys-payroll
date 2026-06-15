@@ -20,6 +20,7 @@ class HubstaffTimeEntry extends Model
             'pto_spent' => 'decimal:2',
             'holiday_spent' => 'decimal:2',
             'raw_payload' => 'array',
+            'active' => 'boolean',
         ];
     }
 

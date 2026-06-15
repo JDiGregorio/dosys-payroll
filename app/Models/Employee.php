@@ -16,14 +16,20 @@ class Employee extends Model
     {
         return [
             'weekly_hours' => 'decimal:2',
+            'ordinary_weekly_hours' => 'decimal:2',
             'daily_hours' => 'decimal:2',
             'schedule_cycle_anchor_date' => 'date',
             'calendar_days' => 'decimal:2',
             'monthly_salary' => 'decimal:2',
+            'semi_monthly_salary' => 'decimal:2',
             'daily_rate' => 'decimal:4',
             'overtime_hours' => 'decimal:2',
+            'preassigned_overtime_weekly_hours' => 'decimal:2',
+            'preassigned_overtime_period_hours' => 'decimal:2',
             'hourly_rate' => 'decimal:4',
             'overtime_hourly_rate' => 'decimal:4',
+            'hubstaff_expected_hours_per_workday' => 'decimal:2',
+            'paid_hours_per_workday' => 'decimal:2',
             'monthly_overtime_amount' => 'decimal:2',
             'base_salary' => 'decimal:2',
             'expected_days' => 'decimal:2',
@@ -32,6 +38,9 @@ class Employee extends Model
             'productivity_bonus' => 'decimal:2',
             'time_management_bonus' => 'decimal:2',
             'can_work_overtime' => 'boolean',
+            'lunch_included_in_hubstaff_total' => 'boolean',
+            'breaks_included_in_hubstaff_total' => 'boolean',
+            'salary_values_are_manual' => 'boolean',
             'internet_subsidy_amount' => 'decimal:2',
             'applies_private_insurance' => 'boolean',
             'applies_ihss' => 'boolean',
@@ -69,6 +78,16 @@ class Employee extends Model
     public function scheduleType(): BelongsTo
     {
         return $this->belongsTo(ScheduleType::class);
+    }
+
+    public function workScheduleTemplate(): BelongsTo
+    {
+        return $this->belongsTo(WorkScheduleTemplate::class);
+    }
+
+    public function scheduleAssignments(): HasMany
+    {
+        return $this->hasMany(EmployeeScheduleAssignment::class);
     }
 
     public function contractType(): BelongsTo

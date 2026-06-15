@@ -48,6 +48,7 @@ class FilamentPagesTest extends TestCase
             '/admin/departments',
             '/admin/work-roles',
             '/admin/schedule-types',
+            '/admin/work-schedule-templates',
             '/admin/contract-types',
             '/admin/hourly-rate-types',
             '/admin/tier-levels',
@@ -152,7 +153,7 @@ class FilamentPagesTest extends TestCase
             ->assertSee('00123456789');
     }
 
-    public function test_tier_one_employee_uses_trial_period_contract(): void
+    public function test_tier_one_employee_uses_trial_period_contract_without_overwriting_salary(): void
     {
         $trialContract = ContractType::query()->firstOrCreate(['code' => 'trial_period'], ['name' => 'Periodo de prueba']);
         $tierLevel = TierLevel::query()->create(['name' => 'Tier 1']);
@@ -162,16 +163,22 @@ class FilamentPagesTest extends TestCase
             'contract_type_id' => null,
             'daily_hours' => 8,
             'hourly_rate' => 10,
+            'monthly_salary' => 14200,
+            'semi_monthly_salary' => 7100,
+            'daily_rate' => 473.3333,
+            'overtime_hourly_rate' => 15,
             'overtime_hours' => 4,
         ]);
 
         $this->assertSame($trialContract->id, $data['contract_type_id']);
-        $this->assertSame(2400.0, $data['monthly_salary']);
-        $this->assertSame(12.5, $data['overtime_hourly_rate']);
+        $this->assertSame(14200, $data['monthly_salary']);
+        $this->assertSame(7100, $data['semi_monthly_salary']);
+        $this->assertSame(473.3333, $data['daily_rate']);
+        $this->assertSame(15, $data['overtime_hourly_rate']);
         $this->assertArrayNotHasKey('monthly_overtime_amount', $data);
     }
 
-    public function test_rotating_employee_uses_ten_daily_hours_without_inflating_monthly_salary(): void
+    public function test_rotating_employee_keeps_all_manual_compensation_values(): void
     {
         $schedule = ScheduleType::query()->create([
             'name' => 'Rotativa',
@@ -183,15 +190,24 @@ class FilamentPagesTest extends TestCase
         $data = EmployeeResource::normalizeCompensation([
             'schedule_type_id' => $schedule->id,
             'weekly_hours' => 40,
+            'ordinary_weekly_hours' => 44,
             'daily_hours' => 10,
             'hourly_rate' => 10,
+            'monthly_salary' => 16500,
+            'semi_monthly_salary' => 8250,
+            'daily_rate' => 550,
+            'overtime_hourly_rate' => 14.75,
+            'preassigned_overtime_weekly_hours' => 4,
             'overtime_hours' => 4,
         ]);
 
         $this->assertSame(10.0, (float) $data['daily_hours']);
-        $this->assertSame(2400.0, $data['monthly_salary']);
-        $this->assertSame(80.0, $data['daily_rate']);
-        $this->assertSame(12.5, $data['overtime_hourly_rate']);
+        $this->assertSame(44.0, $data['weekly_hours']);
+        $this->assertSame(4.0, $data['overtime_hours']);
+        $this->assertSame(16500, $data['monthly_salary']);
+        $this->assertSame(8250, $data['semi_monthly_salary']);
+        $this->assertSame(550, $data['daily_rate']);
+        $this->assertSame(14.75, $data['overtime_hourly_rate']);
     }
 
     public function test_schedule_seeder_moves_legacy_4x4_references_to_rotating_schedule(): void
@@ -402,6 +418,9 @@ class FilamentPagesTest extends TestCase
                 'employee_id' => $employee->id,
                 'date' => '2026-06-01',
                 'expected_seconds' => 28800,
+                'expected_ordinary_seconds' => 28800,
+                'expected_hubstaff_seconds' => 28800,
+                'expected_paid_seconds' => 28800,
                 'hubstaff_total_seconds' => 21600,
                 'payable_seconds' => 21600,
                 'unjustified_absence_seconds' => 7200,
@@ -476,6 +495,8 @@ class FilamentPagesTest extends TestCase
             'date' => '2026-06-01',
             'expected_seconds' => 28800,
             'assigned_overtime_seconds' => 3600,
+            'expected_ordinary_seconds' => 28800,
+            'expected_paid_seconds' => 32400,
             'payable_seconds' => 28800,
             'unjustified_absence_seconds' => 3600,
         ]);
@@ -494,6 +515,8 @@ class FilamentPagesTest extends TestCase
             'date' => '2026-06-03',
             'expected_seconds' => 28800,
             'assigned_overtime_seconds' => 3600,
+            'expected_ordinary_seconds' => 28800,
+            'expected_paid_seconds' => 32400,
             'payable_seconds' => 28800,
             'unjustified_absence_seconds' => 3600,
             'hubstaff_idle_seconds' => 600,
@@ -601,13 +624,47 @@ class FilamentPagesTest extends TestCase
             ->assertOk()
             ->assertDontSee('Importar CSV de Hubstaff')
             ->assertDontSee('Mapear empleado Hubstaff')
-            ->assertDontSee('Calcular planilla');
+            ->assertDontSee('Actualizar cálculos del período');
 
         $this->get("/admin/payroll-periods/{$period->id}/edit")
             ->assertOk()
             ->assertSee('Reemplazar CSV de Hubstaff')
             ->assertSee('Mapear empleado Hubstaff')
-            ->assertSee('Calcular planilla');
+            ->assertSee('Actualizar cálculos del período');
+    }
+
+    public function test_payroll_results_index_hides_internal_schedule_calculation_columns(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Results',
+            'email' => 'rrhh-results@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Resultados internos',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado resultados',
+            'active' => true,
+        ]);
+        PayrollResult::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+        ]);
+
+        $this->actingAs($user);
+
+        $this->get('/admin/payroll-results')
+            ->assertOk()
+            ->assertDontSee('Días programados')
+            ->assertDontSee('Horas esperadas Hubstaff')
+            ->assertDontSee('Horas pagadas esperadas')
+            ->assertDontSee('Horas Hubstaff')
+            ->assertDontSee('Horas pagables');
     }
 
     public function test_daily_review_edit_shows_hubstaff_detail_tab(): void

@@ -45,6 +45,11 @@ class HubstaffTimeEntryResource extends Resource
         return false;
     }
 
+    public static function getEloquentQuery(): Builder
+    {
+        return parent::getEloquentQuery()->where('active', true);
+    }
+
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
@@ -75,7 +80,7 @@ class HubstaffTimeEntryResource extends Resource
             ->filters([
                 SelectFilter::make('payroll_period_id')->relationship('payrollPeriod', 'name')->label('Período'),
                 SelectFilter::make('employee_id')->relationship('employee', 'name')->searchable()->label('Empleado'),
-                SelectFilter::make('project')->label('Proyecto')->options(fn () => HubstaffTimeEntry::query()->whereNotNull('project')->distinct()->pluck('project', 'project')->all()),
+                SelectFilter::make('project')->label('Proyecto')->options(fn () => HubstaffTimeEntry::query()->where('active', true)->whereNotNull('project')->distinct()->pluck('project', 'project')->all()),
                 Filter::make('date')->label('Fecha')->form([DatePicker::make('date')->label('Fecha')])->query(fn (Builder $query, array $data) => $query->when($data['date'] ?? null, fn (Builder $query, $date) => $query->whereDate('date', $date))),
                 Filter::make('unmapped')->label('Sin empleado')->query(fn (Builder $query) => $query->whereNull('employee_id')),
             ])

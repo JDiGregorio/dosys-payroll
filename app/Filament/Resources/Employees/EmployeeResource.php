@@ -129,20 +129,20 @@ class EmployeeResource extends Resource
                 ->searchable()
                 ->preload()
                 ->live()
-                ->afterStateUpdated(function (?int $state, Get $get, Set $set): void {
-                    if (self::scheduleCode($state) === 'rotativa') {
-                        $set('weekly_hours', 40);
-                        $set('daily_hours', 10);
-                        $set('overtime_hours', 4);
-                        self::syncCalculatedPayFields($get, $set);
-                    }
-                })
                 ->required(),
+            Select::make('work_schedule_template_id')
+                ->label('Plantilla de horario')
+                ->relationship('workScheduleTemplate', 'name')
+                ->searchable()
+                ->preload()
+                ->nullable(),
             DatePicker::make('schedule_cycle_anchor_date')
                 ->label('Inicio del ciclo rotativo')
-                ->helperText('Selecciona el primer día laborado de un bloque de cuatro días.')
+                ->helperText('Selecciona el primer día laborado del ciclo.')
                 ->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa')
                 ->required(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),
+            TextInput::make('rotation_work_days')->label('Días trabajados del ciclo')->numeric()->minValue(1)->default(4)->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),
+            TextInput::make('rotation_rest_days')->label('Días de descanso del ciclo')->numeric()->minValue(0)->default(4)->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),
             Select::make('contract_type_id')->label('Tipo de contrato')->relationship('contractType', 'name')->searchable()->preload()->required(),
             Select::make('supervisor_user_id')
                 ->label('Supervisor')
@@ -161,34 +161,31 @@ class EmployeeResource extends Resource
                 ->searchable()
                 ->preload()
                 ->nullable(),
-            TextInput::make('weekly_hours')->label('Horas ordinarias semanales')->helperText('No incluir horas extra asignadas en este valor.')->numeric()->default(0),
-            TextInput::make('daily_hours')
-                ->label('Horas diarias')
-                ->numeric()
-                ->default(0)
-                ->live(onBlur: true)
-                ->afterStateUpdated(fn (Get $get, Set $set) => self::syncCalculatedPayFields($get, $set)),
+            Select::make('salary_calculation_method')->label('Método de cálculo salarial')->options(self::salaryCalculationMethodOptions())->default('hourly_actual_hours')->required(),
+            Toggle::make('salary_values_are_manual')->label('Valores salariales manuales')->helperText('Los valores de esta ficha tienen prioridad sobre Tier y fórmulas sugeridas.')->default(true),
+            TextInput::make('ordinary_weekly_hours')->label('Horas ordinarias semanales')->helperText('No incluir horas extra preasignadas.')->numeric()->minValue(0)->default(0),
+            TextInput::make('daily_hours')->label('Horas diarias')->numeric()->minValue(0)->default(0),
             TextInput::make('calendar_days')->label('Días')->numeric()->default(30)->readOnly(),
 
-            TextInput::make('monthly_salary')->label('Salario mensual')->numeric()->default(0)->readOnly(),
-            TextInput::make('biweekly_salary')->label('Pago quincenal')->numeric()->default(0)->readOnly()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?Employee $record) => $component->state($record ? round(((float) $record->monthly_salary) / 2, 2) : 0)),
-            TextInput::make('daily_rate')->label('Pago por día')->numeric()->default(0)->readOnly(),
-            TextInput::make('hourly_rate')
-                ->label('Pago por hora')
-                ->numeric()
-                ->default(0)
-                ->live(onBlur: true)
-                ->afterStateUpdated(fn (Get $get, Set $set) => self::syncCalculatedPayFields($get, $set)),
-            TextInput::make('overtime_hours')
-                ->label('Horas extra asignadas')
+            TextInput::make('monthly_salary')->label('Salario mensual')->numeric()->minValue(0)->default(0),
+            TextInput::make('semi_monthly_salary')->label('Pago quincenal')->numeric()->minValue(0)->default(0),
+            TextInput::make('daily_rate')->label('Pago por día')->numeric()->minValue(0)->default(0),
+            TextInput::make('hourly_rate')->label('Pago por hora')->numeric()->minValue(0)->default(0),
+            TextInput::make('preassigned_overtime_weekly_hours')
+                ->label('Horas extra preasignadas por semana')
                 ->helperText(fn (Get $get) => self::assignedOvertimeHelp($get('schedule_type_id')))
                 ->numeric()
-                ->live(onBlur: true)
                 ->minValue(0)
                 ->default(0)
-                ->afterStateUpdated(fn (Get $get, Set $set) => self::syncCalculatedPayFields($get, $set))
                 ->rules([fn (Get $get): Closure => self::assignedOvertimeRule($get)]),
-            TextInput::make('overtime_hourly_rate')->label('Valor hora extra')->helperText('Pago por hora x 1.25.')->numeric()->default(0)->readOnly(),
+            TextInput::make('preassigned_overtime_period_hours')->label('Horas extra preasignadas del período')->helperText('Opcional. En cero se calcula desde la configuración semanal y los días programados.')->numeric()->minValue(0)->default(0),
+            TextInput::make('overtime_hourly_rate')->label('Pago hora extra')->numeric()->minValue(0)->default(0),
+            TextInput::make('hubstaff_expected_hours_per_workday')->label('Horas esperadas Hubstaff por día trabajado')->numeric()->minValue(0)->nullable()->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),
+            TextInput::make('paid_hours_per_workday')->label('Horas pagadas por día trabajado')->numeric()->minValue(0)->nullable()->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),
+            TextInput::make('paid_lunch_minutes_per_workday')->label('Lunch pagado no trackeado (minutos)')->numeric()->minValue(0)->default(0)->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),
+            Toggle::make('lunch_included_in_hubstaff_total')->label('Lunch incluido en el total de Hubstaff')->default(true)->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),
+            TextInput::make('paid_break_minutes_per_workday')->label('Breaks pagados por día (minutos)')->numeric()->minValue(0)->default(0)->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),
+            Toggle::make('breaks_included_in_hubstaff_total')->label('Breaks incluidos en el total de Hubstaff')->default(true)->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),
             Toggle::make('can_work_overtime')->label('Puede hacer horas extra')->default(true),
             Select::make('location')->label('Ubicación')->options(['on_site' => 'Presencial', 'remote' => 'Remoto'])->default('on_site')->required(),
             TextInput::make('internet_subsidy_amount')->label('Subsidio de internet')->numeric()->default(0),
@@ -219,7 +216,7 @@ class EmployeeResource extends Resource
                 TextColumn::make('workRole.name')->label('Rol')->toggleable(),
                 TextColumn::make('tierLevel.name')->label('Tier')->toggleable(),
                 TextColumn::make('daily_hours')->label('Horas diarias')->numeric()->sortable(),
-                TextColumn::make('overtime_hours')->label('Horas extra asignadas')->numeric()->sortable(),
+                TextColumn::make('preassigned_overtime_weekly_hours')->label('Horas extra preasignadas')->numeric()->sortable(),
                 TextColumn::make('hourly_rate')->label('Pago por hora')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('overtime_hourly_rate')->label('Valor hora extra')->money('HNL', locale: 'en-US')->toggleable(),
                 IconColumn::make('active')->label('Activo')->boolean(),
@@ -260,21 +257,10 @@ class EmployeeResource extends Resource
 
     public static function normalizeCompensation(array $data): array
     {
-        $hourlyRate = (float) ($data['hourly_rate'] ?? 0);
-        $dailyHours = (float) ($data['daily_hours'] ?? 0);
-        $weeklyHours = (float) ($data['weekly_hours'] ?? 0);
-        $compensationDailyHours = self::compensationDailyHours(
-            (int) ($data['schedule_type_id'] ?? 0),
-            $dailyHours,
-            $weeklyHours,
-        );
-        $monthlySalary = $compensationDailyHours * $hourlyRate * 30;
-        $overtimeHourlyRate = $hourlyRate * 1.25;
-
-        $data['calendar_days'] = 30;
-        $data['monthly_salary'] = round($monthlySalary, 2);
-        $data['daily_rate'] = round($monthlySalary / 30, 4);
-        $data['overtime_hourly_rate'] = round($overtimeHourlyRate, 4);
+        $data['calendar_days'] = max((float) ($data['calendar_days'] ?? 30), 1);
+        $data['weekly_hours'] = max((float) ($data['ordinary_weekly_hours'] ?? 0), 0);
+        $data['overtime_hours'] = max((float) ($data['preassigned_overtime_weekly_hours'] ?? 0), 0);
+        $data['salary_values_are_manual'] = (bool) ($data['salary_values_are_manual'] ?? true);
         unset($data['monthly_overtime_amount']);
 
         if (self::isTierOne((int) ($data['tier_level_id'] ?? 0))) {
@@ -282,24 +268,6 @@ class EmployeeResource extends Resource
         }
 
         return $data;
-    }
-
-    private static function syncCalculatedPayFields(Get $get, Set $set): void
-    {
-        $hourlyRate = (float) ($get('hourly_rate') ?? 0);
-        $compensationDailyHours = self::compensationDailyHours(
-            (int) ($get('schedule_type_id') ?? 0),
-            (float) ($get('daily_hours') ?? 0),
-            (float) ($get('weekly_hours') ?? 0),
-        );
-        $monthlySalary = $compensationDailyHours * $hourlyRate * 30;
-        $overtimeHourlyRate = $hourlyRate * 1.25;
-
-        $set('calendar_days', 30);
-        $set('monthly_salary', round($monthlySalary, 2));
-        $set('biweekly_salary', round($monthlySalary / 2, 2));
-        $set('daily_rate', round($monthlySalary / 30, 4));
-        $set('overtime_hourly_rate', round($overtimeHourlyRate, 4));
     }
 
     private static function isTierOne(?int $tierLevelId): bool
@@ -326,41 +294,57 @@ class EmployeeResource extends Resource
     private static function assignedOvertimeHelp(?int $scheduleTypeId): string
     {
         return match (self::scheduleCode($scheduleTypeId)) {
-            'diurna' => 'Para jornada diurna, el máximo permitido es 8 horas extra asignadas.',
-            'rotativa' => 'La jornada rotativa usa 40 horas ordinarias y 4 horas extra por cada bloque de cuatro días laborados.',
+            'diurna' => 'Horas extra preasignadas por semana. Se permiten fracciones como 0.5 o 1.25.',
+            'rotativa' => 'Configura las horas extra preasignadas reales del ciclo semanal del empleado.',
             default => 'Horas extra previamente asignadas al empleado; no son monto monetario.',
         };
-    }
-
-    private static function compensationDailyHours(
-        ?int $scheduleTypeId,
-        float $dailyHours,
-        float $weeklyHours,
-    ): float {
-        if (self::scheduleCode($scheduleTypeId) === 'rotativa' && $weeklyHours > 0) {
-            return $weeklyHours / 5;
-        }
-
-        return $dailyHours;
     }
 
     private static function assignedOvertimeRule(Get $get): Closure
     {
         return function (string $attribute, mixed $value, Closure $fail) use ($get): void {
             $hours = (float) ($value ?? 0);
-            $scheduleCode = self::scheduleCode($get('schedule_type_id'));
-
-            if ($scheduleCode === 'diurna' && $hours > 8) {
-                $fail('La jornada diurna permite máximo 8 horas extra asignadas.');
-            }
-
-            if ($scheduleCode === 'rotativa' && $hours !== 4.0) {
-                $fail('La jornada rotativa debe tener exactamente 4 horas extra asignadas.');
-            }
-
             if (! $get('can_work_overtime') && $hours > 0) {
                 $fail('El empleado no puede tener horas extra asignadas si la opción Puede hacer horas extra está desactivada.');
             }
         };
+    }
+
+    public static function salaryCalculationMethodOptions(): array
+    {
+        return [
+            'hourly_actual_hours' => 'Horas reales pagables',
+            'semi_monthly_fixed_with_deductions' => 'Quincenal fijo con deducciones',
+            'monthly_calendar_prorated' => 'Mensual prorrateado por días',
+            'scheduled_shift_prorated' => 'Prorrateado por jornada programada',
+        ];
+    }
+
+    /**
+     * @return array<string, float>
+     */
+    public static function suggestedCompensation(Employee $employee): array
+    {
+        $hourlyRate = (float) $employee->tierLevel?->hourly_rate
+            ?: (float) $employee->hourly_rate;
+        $ordinaryWeeklyHours = (float) $employee->ordinary_weekly_hours
+            ?: (float) $employee->weekly_hours
+            ?: (float) $employee->tierLevel?->weekly_hours;
+        $dailyHours = (float) $employee->daily_hours
+            ?: ($ordinaryWeeklyHours > 0 ? $ordinaryWeeklyHours / 5 : 0);
+        $calendarDays = max((float) $employee->calendar_days, 30);
+        $monthlySalary = (float) $employee->tierLevel?->monthly_salary
+            ?: ($dailyHours * $hourlyRate * $calendarDays);
+
+        return [
+            'ordinary_weekly_hours' => round($ordinaryWeeklyHours, 2),
+            'weekly_hours' => round($ordinaryWeeklyHours, 2),
+            'daily_hours' => round($dailyHours, 2),
+            'monthly_salary' => round($monthlySalary, 2),
+            'semi_monthly_salary' => round($monthlySalary / 2, 2),
+            'daily_rate' => round($monthlySalary / $calendarDays, 4),
+            'hourly_rate' => round($hourlyRate, 4),
+            'overtime_hourly_rate' => round($hourlyRate * 1.25, 4),
+        ];
     }
 }

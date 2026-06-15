@@ -6,6 +6,7 @@
     $entries = $record
         ? HubstaffTimeEntry::query()
             ->where('payroll_period_id', $record->payroll_period_id)
+            ->where('active', true)
             ->where('employee_id', $record->employee_id)
             ->whereDate('date', $record->date)
             ->orderBy('id')

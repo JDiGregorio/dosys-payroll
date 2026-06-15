@@ -62,6 +62,7 @@ class ImportAlerts extends Page
 
         return HubstaffTimeEntry::query()
             ->when($this->periodId, fn ($query) => $query->where('payroll_period_id', $this->periodId))
+            ->where('active', true)
             ->whereNull('employee_id')
             ->select('hubstaff_member')
             ->distinct()
@@ -73,7 +74,7 @@ class ImportAlerts extends Page
     public function shortPayableDays(): Collection
     {
         return $this->visibleReviewsQuery()
-            ->whereRaw('payable_seconds < expected_seconds + assigned_overtime_seconds')
+            ->whereColumn('payable_seconds', '<', 'expected_paid_seconds')
             ->where('unjustified_absence_seconds', '>', 0)
             ->orderBy('date')
             ->limit(50)

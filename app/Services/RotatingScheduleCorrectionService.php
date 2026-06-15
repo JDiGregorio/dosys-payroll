@@ -6,6 +6,7 @@ use App\Models\DailyTimeReview;
 use App\Models\Employee;
 use App\Models\PayrollPeriod;
 use App\Models\ScheduleType;
+use App\Models\WorkScheduleTemplate;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -66,6 +67,11 @@ class RotatingScheduleCorrectionService
                 throw new RuntimeException('No existe una jornada Rotativa configurada.');
             }
 
+            $rotatingTemplateId = WorkScheduleTemplate::query()
+                ->where('schedule_type', 'rotativa')
+                ->where('active', true)
+                ->value('id');
+
             $previewByEmployee = collect($this->preview($period))->keyBy('employee_id');
             $targetEmployees = collect(self::EMPLOYEES)
                 ->map(fn (array $definition): Employee => $this->resolveEmployee($definition['prefix']));
@@ -79,24 +85,28 @@ class RotatingScheduleCorrectionService
 
                 $employee->update([
                     'schedule_type_id' => $rotatingScheduleId,
+                    'work_schedule_template_id' => $rotatingTemplateId,
                     'schedule_cycle_anchor_date' => $definition['anchor_date'],
-                    'weekly_hours' => 40,
-                    'daily_hours' => 10,
+                    'rotation_work_days' => 4,
+                    'rotation_rest_days' => 4,
+                    'weekly_hours' => 44,
+                    'ordinary_weekly_hours' => 44,
+                    'daily_hours' => 11,
                     'overtime_hours' => 4,
+                    'preassigned_overtime_weekly_hours' => 4,
+                    'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+                    'hubstaff_expected_hours_per_workday' => 11,
+                    'paid_hours_per_workday' => 12,
+                    'paid_lunch_minutes_per_workday' => 60,
+                    'lunch_included_in_hubstaff_total' => false,
+                    'breaks_included_in_hubstaff_total' => true,
                     'can_work_overtime' => true,
                 ]);
-                $employee->refresh();
-
-                $this->payrollCalculationService->regenerateEmployeeDailyReviews(
-                    $period,
-                    $employee,
-                    resetReviewState: true,
-                );
 
                 $results[] = $preview;
             }
 
-            $this->payrollCalculationService->recalculatePayrollResults($period);
+            $this->payrollCalculationService->recalculatePeriodPreservingManual($period);
             $this->assertProtectedReviewStateUnchanged($period, $targetEmployeeIds->all(), $protectedReviewState);
             $period->update(['status' => 'en_revision']);
 

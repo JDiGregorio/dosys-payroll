@@ -18,6 +18,7 @@ class PayrollResult extends Model
             'daily_rate' => 'decimal:4',
             'overtime_hourly_rate' => 'decimal:4',
             'worked_days' => 'decimal:2',
+            'scheduled_days' => 'decimal:2',
             'worked_hours' => 'decimal:2',
             'worked_salary_amount' => 'decimal:2',
             'regular_lost_amount' => 'decimal:2',

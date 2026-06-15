@@ -32,6 +32,7 @@ class HubstaffEmployeeMappingService
 
         $hasUnmappedEntries = HubstaffTimeEntry::query()
             ->where('payroll_period_id', $period->id)
+            ->where('active', true)
             ->where('hubstaff_member', $hubstaffMember)
             ->whereNull('employee_id')
             ->exists();
@@ -54,13 +55,12 @@ class HubstaffEmployeeMappingService
 
             $updatedEntries = HubstaffTimeEntry::query()
                 ->where('payroll_period_id', $period->id)
+                ->where('active', true)
                 ->where('hubstaff_member', $hubstaffMember)
                 ->whereNull('employee_id')
                 ->update(['employee_id' => $employee->id]);
 
-            $this->payrollCalculationService->generateDailyReviews($period);
-            $this->payrollCalculationService->recalculatePayrollResults($period);
-            $period->update(['status' => 'en_revision']);
+            $this->payrollCalculationService->recalculatePeriodPreservingManual($period);
 
             return $updatedEntries;
         });
