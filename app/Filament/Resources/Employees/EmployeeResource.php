@@ -15,6 +15,7 @@ use Closure;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -129,14 +130,18 @@ class EmployeeResource extends Resource
                 ->preload()
                 ->live()
                 ->afterStateUpdated(function (?int $state, Get $get, Set $set): void {
-                    if (self::scheduleCode($state) === 'rotativa') {
+                    if (in_array(self::scheduleCode($state), ['rotativa', '4x4'], true)) {
                         $set('weekly_hours', 40);
-                        $set('daily_hours', 8);
                         $set('overtime_hours', 4);
                         self::syncCalculatedPayFields($get, $set);
                     }
                 })
                 ->required(),
+            DatePicker::make('schedule_cycle_anchor_date')
+                ->label('Inicio del ciclo 4x4')
+                ->helperText('Selecciona el primer día laborado de un bloque de cuatro días.')
+                ->visible(fn (Get $get) => in_array(self::scheduleCode($get('schedule_type_id')), ['rotativa', '4x4'], true))
+                ->required(fn (Get $get) => in_array(self::scheduleCode($get('schedule_type_id')), ['rotativa', '4x4'], true)),
             Select::make('contract_type_id')->label('Tipo de contrato')->relationship('contractType', 'name')->searchable()->preload()->required(),
             Select::make('supervisor_user_id')
                 ->label('Supervisor')
@@ -310,7 +315,7 @@ class EmployeeResource extends Resource
     {
         return match (self::scheduleCode($scheduleTypeId)) {
             'diurna' => 'Para jornada diurna, el máximo permitido es 8 horas extra asignadas.',
-            'rotativa' => 'Para jornada rotativa, deben configurarse 4 horas extra asignadas. Las horas ordinarias semanales quedan en 40.',
+            'rotativa', '4x4' => 'La jornada 4x4 usa 40 horas ordinarias y 4 horas extra por cada bloque de cuatro días laborados.',
             default => 'Horas extra previamente asignadas al empleado; no son monto monetario.',
         };
     }
@@ -325,8 +330,8 @@ class EmployeeResource extends Resource
                 $fail('La jornada diurna permite máximo 8 horas extra asignadas.');
             }
 
-            if ($scheduleCode === 'rotativa' && $hours !== 4.0) {
-                $fail('La jornada rotativa debe tener exactamente 4 horas extra asignadas.');
+            if (in_array($scheduleCode, ['rotativa', '4x4'], true) && $hours !== 4.0) {
+                $fail('La jornada 4x4 debe tener exactamente 4 horas extra asignadas.');
             }
 
             if (! $get('can_work_overtime') && $hours > 0) {

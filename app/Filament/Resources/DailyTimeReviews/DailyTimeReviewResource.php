@@ -117,8 +117,9 @@ class DailyTimeReviewResource extends Resource
                                 ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->justified_absence_seconds) : '0:00')),
                             Toggle::make('assigned_overtime_fulfilled')
                                 ->label('Cumplió la hora extra asignada')
-                                ->helperText('Actívalo cuando el supervisor confirma que la hora extra se cumplió. Se pagará a tarifa extra y cualquier faltante no justificado se tratará como tiempo normal.')
-                                ->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record) && (int) $record?->assigned_overtime_seconds > 0),
+                                ->helperText('Actívalo cuando el supervisor confirma que la hora extra se cumplió; cualquier faltante no justificado se descontará como tiempo normal. Si queda inactivo, se paga proporcionalmente el tiempo extra trabajado o justificado después de completar las horas normales.')
+                                ->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record)
+                                    && (float) $record?->employee?->overtime_hours > 0),
                             Toggle::make('paid_day_off')->label('Día libre (OFF)')->helperText('Marca este día cuando no hubo registro porque era día libre y debe pagarse completo.')->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record)),
                             Toggle::make('absence_justified')->label('Ausencia justificada')->helperText('Marca si no hubo registro, pero el día debe pagarse por permiso o constancia.')->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record))->afterStateHydrated(fn (Toggle $component, ?DailyTimeReview $record) => $component->state($record ? self::isFullyJustifiedAbsence($record) : false)),
                             Textarea::make('supervisor_comment')->label('Comentario supervisor')->columnSpanFull(),

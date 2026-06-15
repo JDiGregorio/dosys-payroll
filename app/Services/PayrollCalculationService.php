@@ -9,6 +9,7 @@ use App\Models\PaidTimeProject;
 use App\Models\PayrollOvertimeAdjustment;
 use App\Models\PayrollPeriod;
 use App\Models\PayrollResult;
+use Carbon\Carbon;
 use Carbon\CarbonPeriod;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -41,55 +42,47 @@ class PayrollCalculationService
             $employees = Employee::query()->where('active', true)->get();
 
             foreach ($employees as $employee) {
-                foreach (CarbonPeriod::create($period->starts_at, $period->ends_at) as $date) {
-                    $dateString = $date->toDateString();
-                    $entries = $entriesByEmployeeDate->get($employee->id.'|'.$dateString, collect());
-                    $expectedSeconds = max((int) round((float) $employee->daily_hours * 3600), 0);
-                    $hubstaffTotalSeconds = (int) $entries->sum('total_seconds');
-                    $assignedOvertimeSeconds = $hubstaffTotalSeconds > 0
-                        ? $this->assignedDailyOvertimeSeconds($employee)
-                        : 0;
-                    $idleSeconds = (int) $entries->sum('idle_seconds');
-
-                    $review = DailyTimeReview::query()->firstOrNew([
-                        'payroll_period_id' => $period->id,
-                        'employee_id' => $employee->id,
-                        'date' => $dateString,
-                    ]);
-
-                    $isNew = ! $review->exists;
-
-                    $review->fill([
-                        'expected_seconds' => $expectedSeconds,
-                        'assigned_overtime_seconds' => $assignedOvertimeSeconds,
-                        'hubstaff_total_seconds' => $hubstaffTotalSeconds,
-                        'hubstaff_regular_seconds' => (int) $entries->sum('regular_seconds'),
-                        'hubstaff_idle_seconds' => $idleSeconds,
-                        'activity_percentage' => $this->weightedPercentage($entries, 'activity_percentage'),
-                        'idle_percentage' => $this->weightedPercentage($entries, 'idle_percentage'),
-                        'pto_seconds' => 0,
-                        'holiday_seconds' => 0,
-                        'paid_break_seconds' => $this->paidBreakSeconds($entries),
-                        'status' => $review->status ?: 'pendiente',
-                    ]);
-
-                    if ($isNew) {
-                        $review->pending_idle_seconds = $idleSeconds;
-                        $review->justified_idle_seconds = 0;
-                        $review->unjustified_idle_seconds = $idleSeconds;
-                        $review->justified_absence_seconds = 0;
-                        $review->unjustified_absence_seconds = max($expectedSeconds + $assignedOvertimeSeconds - $hubstaffTotalSeconds, 0);
-                        $review->approved_overtime_seconds = 0;
-                        $review->assigned_overtime_fulfilled = $assignedOvertimeSeconds > 0
-                            && $hubstaffTotalSeconds > $expectedSeconds;
-                        $review->paid_day_off = false;
-                    }
-
-                    $this->recalculateDailyReview($review);
-                }
+                $this->syncEmployeeDailyReviews($period, $employee, $entriesByEmployeeDate);
             }
 
             $this->generatePayrollDeductions($period);
+        });
+    }
+
+    public function regenerateEmployeeDailyReviews(
+        PayrollPeriod $period,
+        Employee $employee,
+        bool $resetReviewState = false,
+    ): void {
+        DB::transaction(function () use ($period, $employee, $resetReviewState): void {
+            if ($resetReviewState) {
+                DailyTimeReview::query()
+                    ->where('payroll_period_id', $period->id)
+                    ->where('employee_id', $employee->id)
+                    ->update([
+                        'justified_idle_seconds' => 0,
+                        'unjustified_idle_seconds' => 0,
+                        'justified_absence_seconds' => 0,
+                        'unjustified_absence_seconds' => 0,
+                        'approved_overtime_seconds' => 0,
+                        'assigned_overtime_fulfilled' => false,
+                        'paid_day_off' => false,
+                        'status' => 'pendiente',
+                        'supervisor_comment' => null,
+                        'rrhh_comment' => null,
+                        'reviewed_by' => null,
+                        'approved_by' => null,
+                    ]);
+            }
+
+            $entriesByEmployeeDate = HubstaffTimeEntry::query()
+                ->where('payroll_period_id', $period->id)
+                ->where('employee_id', $employee->id)
+                ->get()
+                ->groupBy(fn (HubstaffTimeEntry $entry) => $entry->employee_id.'|'.$entry->date->toDateString());
+
+            $this->syncEmployeeDailyReviews($period, $employee, $entriesByEmployeeDate);
+            $this->recalculateEmployeePayrollResult($period, $employee);
         });
     }
 
@@ -98,12 +91,23 @@ class PayrollCalculationService
         $employee = $review->relationLoaded('employee')
             ? $review->employee
             : $review->employee()->first();
+        $period = $review->relationLoaded('payrollPeriod')
+            ? $review->payrollPeriod
+            : $review->payrollPeriod()->first();
 
+        if ($employee && $period) {
+            $this->redistributeAssignedOvertime($period, $employee);
+
+            return;
+        }
+
+        $this->calculateDailyReview($review, $employee);
+    }
+
+    private function calculateDailyReview(DailyTimeReview $review, ?Employee $employee = null): void
+    {
         if ($employee) {
-            $review->expected_seconds = max((int) round((float) $employee->daily_hours * 3600), 0);
-            $review->assigned_overtime_seconds = (int) $review->hubstaff_total_seconds > 0
-                ? $this->assignedDailyOvertimeSeconds($employee)
-                : 0;
+            $review->expected_seconds = $this->expectedDailySeconds($employee, $review->date);
         }
 
         foreach ([
@@ -127,13 +131,13 @@ class PayrollCalculationService
             $review->payable_seconds = $review->expected_seconds;
         } else {
             $totalMissingSeconds = $this->totalMissingSeconds($review);
-            $review->justified_absence_seconds = min((int) $review->justified_absence_seconds, $totalMissingSeconds);
-            $review->unjustified_absence_seconds = max($totalMissingSeconds - (int) $review->justified_absence_seconds, 0);
+            $effectiveJustifiedSeconds = min((int) $review->justified_absence_seconds, $totalMissingSeconds);
+            $review->unjustified_absence_seconds = max($totalMissingSeconds - $effectiveJustifiedSeconds, 0);
             $review->payable_seconds = $this->regularPayableSeconds($review)
                 + $this->paidAssignedOvertimeSeconds($review);
         }
 
-        $review->difference_seconds = $review->hubstaff_total_seconds - $this->requiredSeconds($review);
+        $review->difference_seconds = (int) $review->hubstaff_total_seconds - $this->requiredSeconds($review);
         $review->possible_overtime_seconds = $this->paidAssignedOvertimeSeconds($review);
 
         if ($review->approved_overtime_seconds > $review->possible_overtime_seconds) {
@@ -190,7 +194,9 @@ class PayrollCalculationService
         $extrasTotal = round($overtimeAmount + $internetSubsidy + $qaBonus + $productivityBonus + $timeManagementBonus + $extraBonuses + $referredBonus + $adjustmentBonus + $payrollCompensation, 2);
         $workedDays = $this->workedDays($reviews);
         $workedSalary = round(($regularPayableSeconds / 3600) * $hourlyRate, 2);
-        $regularLostSeconds = (int) $reviews->sum('unjustified_absence_seconds');
+        $regularLostSeconds = (int) $reviews->sum(
+            fn (DailyTimeReview $review): int => $this->regularUnjustifiedSeconds($review),
+        );
         $overtimeLostSeconds = 0;
         $regularLostAmount = ($regularLostSeconds / 3600) * $hourlyRate;
         $overtimeLostAmount = 0.0;
@@ -268,14 +274,12 @@ class PayrollCalculationService
         DB::transaction(function () use ($period): void {
             $this->generatePayrollDeductions($period);
 
-            DailyTimeReview::query()
-                ->where('payroll_period_id', $period->id)
-                ->get()
-                ->each(fn (DailyTimeReview $review) => $this->recalculateDailyReview($review));
-
             Employee::query()
                 ->whereHas('dailyTimeReviews', fn ($query) => $query->where('payroll_period_id', $period->id))
-                ->each(fn (Employee $employee) => $this->recalculateEmployeePayrollResult($period, $employee));
+                ->each(function (Employee $employee) use ($period): void {
+                    $this->redistributeAssignedOvertime($period, $employee);
+                    $this->recalculateEmployeePayrollResult($period, $employee);
+                });
         });
     }
 
@@ -338,12 +342,8 @@ class PayrollCalculationService
 
     private function employeeMonthlySalary(Employee $employee, float $hourlyRate): float
     {
-        return (float) $employee->daily_hours * $hourlyRate * 30;
-    }
-
-    private function assignedDailyOvertimeSeconds(Employee $employee): int
-    {
-        return max((int) round(((float) $employee->overtime_hours / 5) * 3600), 0);
+        return (float) $employee->monthly_salary
+            ?: (float) $employee->daily_hours * $hourlyRate * 30;
     }
 
     private function requiredSeconds(DailyTimeReview $review): int
@@ -376,13 +376,18 @@ class PayrollCalculationService
 
     private function paidAssignedOvertimeSeconds(DailyTimeReview $review): int
     {
-        if ($review->paid_day_off || ! $review->assigned_overtime_fulfilled) {
+        if ($review->paid_day_off) {
             return 0;
         }
 
+        $creditedSeconds = $this->creditedRequiredSeconds($review);
+        $payableOvertimeSeconds = $review->assigned_overtime_fulfilled
+            ? $creditedSeconds
+            : max($creditedSeconds - (int) $review->expected_seconds, 0);
+
         return min(
             (int) $review->assigned_overtime_seconds,
-            $this->creditedRequiredSeconds($review),
+            $payableOvertimeSeconds,
         );
     }
 
@@ -391,6 +396,24 @@ class PayrollCalculationService
         return min(
             (int) $review->hubstaff_total_seconds + (int) $review->justified_absence_seconds,
             $this->requiredSeconds($review),
+        );
+    }
+
+    private function regularUnjustifiedSeconds(DailyTimeReview $review): int
+    {
+        if ($review->paid_day_off) {
+            return 0;
+        }
+
+        $requiredSeconds = $review->assigned_overtime_fulfilled
+            ? $this->requiredSeconds($review)
+            : (int) $review->expected_seconds;
+
+        return max(
+            $requiredSeconds
+                - (int) $review->hubstaff_total_seconds
+                - (int) $review->justified_absence_seconds,
+            0,
         );
     }
 
@@ -432,5 +455,216 @@ class PayrollCalculationService
 
             return min($this->regularPayableSeconds($review) / $review->expected_seconds, 1.0);
         });
+    }
+
+    private function redistributeAssignedOvertime(PayrollPeriod $period, Employee $employee): void
+    {
+        $reviews = DailyTimeReview::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', $employee->id)
+            ->orderBy('date')
+            ->get();
+
+        if ($reviews->isEmpty()) {
+            return;
+        }
+
+        $reviews->each(function (DailyTimeReview $review) use ($employee): void {
+            $review->expected_seconds = $this->expectedDailySeconds($employee, $review->date);
+        });
+
+        if ($this->isRotatingSchedule($employee)) {
+            foreach ($reviews as $review) {
+                $isScheduledWorkday = $this->isScheduledRotatingWorkday($employee, $review->date);
+                $review->assigned_overtime_seconds = $isScheduledWorkday ? 3600 : 0;
+
+                if ($review->status === 'pendiente') {
+                    $review->assigned_overtime_fulfilled = $isScheduledWorkday
+                        && (int) $review->hubstaff_total_seconds >= $this->requiredSeconds($review);
+                }
+
+                $this->calculateDailyReview($review, $employee);
+            }
+
+            return;
+        }
+
+        $weeklyAssignedSeconds = max((int) round((float) $employee->overtime_hours * 3600), 0);
+        $dailyAssignedLimit = $weeklyAssignedSeconds > 0
+            ? max(3600, (int) ceil($weeklyAssignedSeconds / 5))
+            : 0;
+        $rangeStart = $reviews->min(fn (DailyTimeReview $review) => $review->date->copy()->startOfWeek());
+        $rangeEnd = $reviews->max(fn (DailyTimeReview $review) => $review->date->copy()->endOfWeek());
+        $assignedOutsidePeriod = DailyTimeReview::query()
+            ->where('employee_id', $employee->id)
+            ->where('payroll_period_id', '!=', $period->id)
+            ->whereBetween('date', [$rangeStart, $rangeEnd])
+            ->get()
+            ->groupBy(fn (DailyTimeReview $review): string => $this->weekKey($review->date))
+            ->map(fn (Collection $weekReviews): int => (int) $weekReviews->sum('assigned_overtime_seconds'));
+
+        $reviews
+            ->groupBy(fn (DailyTimeReview $review): string => $this->weekKey($review->date))
+            ->each(function (Collection $weekReviews, string $weekKey) use (
+                $employee,
+                $weeklyAssignedSeconds,
+                $dailyAssignedLimit,
+                $assignedOutsidePeriod,
+            ): void {
+                $remainingSeconds = max(
+                    $weeklyAssignedSeconds - (int) $assignedOutsidePeriod->get($weekKey, 0),
+                    0,
+                );
+
+                $orderedReviews = $weekReviews->sort(function (DailyTimeReview $left, DailyTimeReview $right): int {
+                    $confirmationComparison = (int) $right->assigned_overtime_fulfilled
+                        <=> (int) $left->assigned_overtime_fulfilled;
+
+                    if ($confirmationComparison !== 0) {
+                        return $confirmationComparison;
+                    }
+
+                    $leftReviewed = $left->status !== 'pendiente'
+                        || (int) $left->justified_absence_seconds > 0
+                        || $left->paid_day_off;
+                    $rightReviewed = $right->status !== 'pendiente'
+                        || (int) $right->justified_absence_seconds > 0
+                        || $right->paid_day_off;
+                    $reviewedComparison = (int) $rightReviewed <=> (int) $leftReviewed;
+
+                    if ($reviewedComparison !== 0) {
+                        return $reviewedComparison;
+                    }
+
+                    $leftExcess = max((int) $left->hubstaff_total_seconds - (int) $left->expected_seconds, 0);
+                    $rightExcess = max((int) $right->hubstaff_total_seconds - (int) $right->expected_seconds, 0);
+                    $excessComparison = $rightExcess <=> $leftExcess;
+
+                    return $excessComparison !== 0
+                        ? $excessComparison
+                        : $left->date->getTimestamp() <=> $right->date->getTimestamp();
+                });
+
+                foreach ($orderedReviews as $review) {
+                    $isWorkday = (int) $review->hubstaff_total_seconds > 0 && ! $review->paid_day_off;
+                    $assignedSeconds = $isWorkday
+                        ? min($dailyAssignedLimit, $remainingSeconds)
+                        : 0;
+
+                    $review->assigned_overtime_seconds = $assignedSeconds;
+
+                    if ($assignedSeconds <= 0) {
+                        $review->assigned_overtime_fulfilled = false;
+                    } elseif (
+                        $review->status === 'pendiente'
+                        && ! $review->assigned_overtime_fulfilled
+                    ) {
+                        $review->assigned_overtime_fulfilled = (int) $review->hubstaff_total_seconds
+                            >= (int) $review->expected_seconds + $assignedSeconds;
+                    }
+
+                    $remainingSeconds -= $assignedSeconds;
+                }
+
+                foreach ($weekReviews as $review) {
+                    $this->calculateDailyReview($review, $employee);
+                }
+            });
+    }
+
+    private function weekKey(Carbon $date): string
+    {
+        return $date->copy()->startOfWeek()->toDateString();
+    }
+
+    private function syncEmployeeDailyReviews(
+        PayrollPeriod $period,
+        Employee $employee,
+        Collection $entriesByEmployeeDate,
+    ): void {
+        foreach (CarbonPeriod::create($period->starts_at, $period->ends_at) as $date) {
+            $dateString = $date->toDateString();
+            $entries = $entriesByEmployeeDate->get($employee->id.'|'.$dateString, collect());
+            $expectedSeconds = $this->expectedDailySeconds($employee, $date);
+            $hubstaffTotalSeconds = (int) $entries->sum('total_seconds');
+            $idleSeconds = (int) $entries->sum('idle_seconds');
+
+            $review = DailyTimeReview::query()
+                ->where('payroll_period_id', $period->id)
+                ->where('employee_id', $employee->id)
+                ->whereDate('date', $dateString)
+                ->first() ?? new DailyTimeReview([
+                    'payroll_period_id' => $period->id,
+                    'employee_id' => $employee->id,
+                    'date' => $dateString,
+                ]);
+
+            $isNew = ! $review->exists;
+
+            $review->fill([
+                'expected_seconds' => $expectedSeconds,
+                'hubstaff_total_seconds' => $hubstaffTotalSeconds,
+                'hubstaff_regular_seconds' => (int) $entries->sum('regular_seconds'),
+                'hubstaff_idle_seconds' => $idleSeconds,
+                'activity_percentage' => $this->weightedPercentage($entries, 'activity_percentage'),
+                'idle_percentage' => $this->weightedPercentage($entries, 'idle_percentage'),
+                'pto_seconds' => 0,
+                'holiday_seconds' => 0,
+                'paid_break_seconds' => $this->paidBreakSeconds($entries),
+                'status' => $review->status ?: 'pendiente',
+            ]);
+
+            if ($isNew) {
+                $review->assigned_overtime_seconds = 0;
+                $review->pending_idle_seconds = $idleSeconds;
+                $review->justified_idle_seconds = 0;
+                $review->unjustified_idle_seconds = $idleSeconds;
+                $review->justified_absence_seconds = 0;
+                $review->unjustified_absence_seconds = max($expectedSeconds - $hubstaffTotalSeconds, 0);
+                $review->approved_overtime_seconds = 0;
+                $review->assigned_overtime_fulfilled = false;
+                $review->paid_day_off = false;
+            }
+
+            $review->save();
+        }
+
+        $this->redistributeAssignedOvertime($period, $employee);
+    }
+
+    private function expectedDailySeconds(Employee $employee, Carbon $date): int
+    {
+        if ($this->isRotatingSchedule($employee)) {
+            return $this->isScheduledRotatingWorkday($employee, $date)
+                ? 10 * 3600
+                : 0;
+        }
+
+        return max((int) round((float) $employee->daily_hours * 3600), 0);
+    }
+
+    private function isRotatingSchedule(Employee $employee): bool
+    {
+        $scheduleCode = $employee->relationLoaded('scheduleType')
+            ? $employee->scheduleType?->code
+            : $employee->scheduleType()->value('code');
+
+        return in_array($scheduleCode, ['rotativa', '4x4'], true)
+            && $employee->schedule_cycle_anchor_date !== null;
+    }
+
+    private function isScheduledRotatingWorkday(Employee $employee, Carbon $date): bool
+    {
+        if (! $employee->schedule_cycle_anchor_date) {
+            return false;
+        }
+
+        $daysSinceAnchor = (int) $employee->schedule_cycle_anchor_date
+            ->copy()
+            ->startOfDay()
+            ->diffInDays($date->copy()->startOfDay(), false);
+        $cycleDay = (($daysSinceAnchor % 8) + 8) % 8;
+
+        return $cycleDay < 4;
     }
 }

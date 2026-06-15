@@ -17,6 +17,7 @@ class Employee extends Model
         return [
             'weekly_hours' => 'decimal:2',
             'daily_hours' => 'decimal:2',
+            'schedule_cycle_anchor_date' => 'date',
             'calendar_days' => 'decimal:2',
             'monthly_salary' => 'decimal:2',
             'daily_rate' => 'decimal:4',
