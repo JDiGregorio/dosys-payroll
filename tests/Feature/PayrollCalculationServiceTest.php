@@ -298,6 +298,112 @@ class PayrollCalculationServiceTest extends TestCase
         ]);
     }
 
+    public function test_existing_paid_day_off_uses_updated_schedule_expected_hours(): void
+    {
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Diurna',
+            'code' => 'diurna',
+            'active' => true,
+        ]);
+        $template = $this->createTemplate('Diurna lunes 8h test', 'diurna', [8, 7, 7, 7, 7]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Off con plantilla nueva',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-01',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado off existente',
+            'schedule_type_id' => $schedule->id,
+            'work_schedule_template_id' => $template->id,
+            'daily_hours' => 7.2,
+            'hourly_rate' => 10,
+        ]);
+        $review = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-06-01',
+            'expected_seconds' => 25920,
+            'expected_ordinary_seconds' => 25920,
+            'hubstaff_total_seconds' => 0,
+            'paid_day_off' => true,
+            'unjustified_absence_seconds' => 25920,
+            'status' => 'revisado_supervisor',
+        ]);
+
+        $service = app(PayrollCalculationService::class);
+        $service->recalculateDailyReview($review);
+        $service->recalculateEmployeePayrollResult($period, $employee);
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'id' => $review->id,
+            'paid_day_off' => true,
+            'expected_ordinary_seconds' => 28800,
+            'unjustified_absence_seconds' => 25920,
+            'payable_seconds' => 28800,
+        ]);
+        $this->assertDatabaseHas('payroll_results', [
+            'employee_id' => $employee->id,
+            'worked_days' => 1,
+            'worked_salary_amount' => 80,
+            'lost_time_seconds' => 0,
+        ]);
+    }
+
+    public function test_existing_full_justified_absence_uses_updated_schedule_expected_hours(): void
+    {
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Diurna',
+            'code' => 'diurna',
+            'active' => true,
+        ]);
+        $template = $this->createTemplate('Diurna lunes 8h justificada test', 'diurna', [8, 7, 7, 7, 7]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Justificación con plantilla nueva',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-01',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado ausencia justificada existente',
+            'schedule_type_id' => $schedule->id,
+            'work_schedule_template_id' => $template->id,
+            'daily_hours' => 7.2,
+            'hourly_rate' => 10,
+            'overtime_hours' => 5,
+        ]);
+        $review = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-06-01',
+            'expected_seconds' => 25920,
+            'expected_ordinary_seconds' => 25920,
+            'assigned_overtime_seconds' => 3600,
+            'hubstaff_total_seconds' => 0,
+            'justified_absence_seconds' => 25920,
+            'unjustified_absence_seconds' => 0,
+            'status' => 'revisado_supervisor',
+        ]);
+
+        $service = app(PayrollCalculationService::class);
+        $service->recalculateDailyReview($review);
+        $service->recalculateEmployeePayrollResult($period, $employee);
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'id' => $review->id,
+            'expected_ordinary_seconds' => 28800,
+            'justified_absence_seconds' => 25920,
+            'unjustified_absence_seconds' => 0,
+            'payable_seconds' => 28800,
+        ]);
+        $this->assertDatabaseHas('payroll_results', [
+            'employee_id' => $employee->id,
+            'payable_seconds' => 28800,
+            'worked_salary_amount' => 80,
+            'overtime_seconds' => 0,
+            'lost_time_seconds' => 0,
+            'lost_time_amount' => 0,
+        ]);
+    }
+
     public function test_additional_employee_deductions_are_applied_to_selected_period(): void
     {
         $period = PayrollPeriod::query()->create([

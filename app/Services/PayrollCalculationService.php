@@ -457,7 +457,7 @@ class PayrollCalculationService
 
     private function regularPayableSeconds(DailyTimeReview $review): int
     {
-        if ($review->paid_day_off) {
+        if ($review->paid_day_off || $this->isFullyJustifiedAbsence($review)) {
             return (int) $review->expected_ordinary_seconds;
         }
 
@@ -475,7 +475,7 @@ class PayrollCalculationService
 
     private function paidAssignedOvertimeSeconds(DailyTimeReview $review): int
     {
-        if ($review->paid_day_off) {
+        if ($review->paid_day_off || $this->isFullyJustifiedAbsence($review)) {
             return 0;
         }
 
@@ -513,7 +513,7 @@ class PayrollCalculationService
 
     private function regularUnjustifiedSeconds(DailyTimeReview $review): int
     {
-        if ($review->paid_day_off) {
+        if ($review->paid_day_off || $this->isFullyJustifiedAbsence($review)) {
             return 0;
         }
 
@@ -531,6 +531,14 @@ class PayrollCalculationService
                 - (int) $review->justified_absence_seconds,
             0,
         );
+    }
+
+    private function isFullyJustifiedAbsence(DailyTimeReview $review): bool
+    {
+        return ! $review->paid_day_off
+            && (int) $review->hubstaff_total_seconds <= 0
+            && (int) $review->justified_absence_seconds > 0
+            && (int) $review->unjustified_absence_seconds <= 0;
     }
 
     /**
