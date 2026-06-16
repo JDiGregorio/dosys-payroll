@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\PayrollPeriod;
+use App\Services\PalmettoDebtCollectionsScheduleCorrectionService;
 use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
 use Illuminate\Foundation\Inspiring;
@@ -104,3 +105,63 @@ Artisan::command(
         return self::SUCCESS;
     },
 )->purpose('Aplica la jornada rotativa y la distribución flexible de horas extra preservando revisiones existentes.');
+
+Artisan::command(
+    'payroll:apply-palmetto-36h-schedules {--period= : ID del período de planilla} {--apply : Aplica la corrección; sin esta opción solo muestra una vista previa} {--skip-uninferred : Aplica solo empleados con día de 8 horas inferido y deja pendientes los no inferidos}',
+    function (PalmettoDebtCollectionsScheduleCorrectionService $service): int {
+        $periodId = (int) $this->option('period');
+        $period = PayrollPeriod::query()->find($periodId);
+
+        if (! $period) {
+            $this->error('Debes indicar un período válido con --period=ID.');
+
+            return self::FAILURE;
+        }
+
+        if ($period->status === 'cerrado') {
+            $this->error('El período está cerrado y no será modificado.');
+
+            return self::FAILURE;
+        }
+
+        try {
+            $rows = $service->preview($period);
+        } catch (Throwable $exception) {
+            $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        }
+
+        $this->info("Período: {$period->name} ({$period->id})");
+        $this->table(
+            ['ID', 'Empleado', 'Plantilla actual', 'Día 8h inferido', 'Plantilla nueva', 'Revisiones', 'Revisadas que se preservarán'],
+            collect($rows)->map(fn (array $row): array => [
+                $row['employee_id'],
+                $row['name'],
+                $row['current_template'],
+                $row['eight_hour_weekday'],
+                $row['template'],
+                $row['reviews'],
+                $row['reviewed'],
+            ])->all(),
+        );
+
+        if (! $this->option('apply')) {
+            $this->warn('Vista previa únicamente. Agrega --apply para ejecutar la corrección.');
+
+            return self::SUCCESS;
+        }
+
+        try {
+            $service->apply($period, (bool) $this->option('skip-uninferred'));
+        } catch (Throwable $exception) {
+            $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        }
+
+        $this->info('Corrección aplicada: plantillas 36h PALMETTO / DEBT COLLECTIONS y recálculo preservando información manual.');
+
+        return self::SUCCESS;
+    },
+)->purpose('Asigna plantillas 36h variables a PALMETTO / DEBT COLLECTIONS preservando revisiones existentes.');

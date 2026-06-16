@@ -112,6 +112,31 @@ php artisan payroll:apply-period-corrections --period=ID_PERIODO --apply
 La corrección conserva salarios manuales y toda la información manual del
 período.
 
+Para corregir empleados PALMETTO / DEBT COLLECTIONS de 36 horas con un día
+semanal de 8 horas inferido desde Hubstaff:
+
+```bash
+php artisan payroll:apply-palmetto-36h-schedules --period=ID_PERIODO
+```
+
+La ejecución anterior solo muestra una vista previa. Para aplicar:
+
+```bash
+php artisan payroll:apply-palmetto-36h-schedules --period=ID_PERIODO --apply
+```
+
+Si algún empleado no tiene registros Hubstaff suficientes para inferir el día
+de 8 horas, puedes aplicar solo los empleados inferidos y dejar los demás sin
+cambios:
+
+```bash
+php artisan payroll:apply-palmetto-36h-schedules --period=ID_PERIODO --apply --skip-uninferred
+```
+
+El comando excluye empleados de 40 horas, asigna la plantilla 36h correcta por
+empleado y recalcula preservando justificaciones, comentarios, bonos,
+deducciones, estados y aprobaciones.
+
 ## Validación de planilla
 
 Antes de cerrar un período:

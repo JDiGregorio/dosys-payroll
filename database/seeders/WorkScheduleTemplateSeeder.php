@@ -30,6 +30,36 @@ class WorkScheduleTemplateSeeder extends Seeder
                 'days' => [7, 7, 7, 7, 8],
             ],
             [
+                'name' => 'Diurna 36h - lunes 8h',
+                'schedule_type' => 'diurna',
+                'description' => 'Patrón 36h con 8 horas el lunes y 7 horas los demás días laborables.',
+                'days' => [8, 7, 7, 7, 7],
+            ],
+            [
+                'name' => 'Diurna 36h - martes 8h',
+                'schedule_type' => 'diurna',
+                'description' => 'Patrón 36h con 8 horas el martes y 7 horas los demás días laborables.',
+                'days' => [7, 8, 7, 7, 7],
+            ],
+            [
+                'name' => 'Diurna 36h - miércoles 8h',
+                'schedule_type' => 'diurna',
+                'description' => 'Patrón 36h con 8 horas el miércoles y 7 horas los demás días laborables.',
+                'days' => [7, 7, 8, 7, 7],
+            ],
+            [
+                'name' => 'Diurna 36h - jueves 8h',
+                'schedule_type' => 'diurna',
+                'description' => 'Patrón 36h con 8 horas el jueves y 7 horas los demás días laborables.',
+                'days' => [7, 7, 7, 8, 7],
+            ],
+            [
+                'name' => 'Diurna 36h - viernes 8h',
+                'schedule_type' => 'diurna',
+                'description' => 'Patrón 36h con 8 horas el viernes y 7 horas los demás días laborables.',
+                'days' => [7, 7, 7, 7, 8],
+            ],
+            [
                 'name' => 'Rotativa 4x4',
                 'schedule_type' => 'rotativa',
                 'description' => 'Cuatro días corridos de trabajo y cuatro días corridos de descanso.',
@@ -44,18 +74,22 @@ class WorkScheduleTemplateSeeder extends Seeder
         ];
 
         foreach ($templates as $definition) {
+            foreach ($definition['legacy_names'] ?? [] as $legacyName) {
+                WorkScheduleTemplate::query()
+                    ->where('name', $legacyName)
+                    ->where('name', '!=', $definition['name'])
+                    ->update(['name' => $definition['name']]);
+            }
+
             $template = WorkScheduleTemplate::query()
-                ->whereIn('name', array_merge(
-                    [$definition['name']],
-                    $definition['legacy_names'] ?? [],
-                ))
-                ->first() ?? new WorkScheduleTemplate;
-            $template->fill([
-                'name' => $definition['name'],
-                'schedule_type' => $definition['schedule_type'],
-                'description' => $definition['description'],
-                'active' => true,
-            ])->save();
+                ->updateOrCreate(
+                    ['name' => $definition['name']],
+                    [
+                        'schedule_type' => $definition['schedule_type'],
+                        'description' => $definition['description'],
+                        'active' => true,
+                    ],
+                );
 
             foreach ($definition['days'] as $index => $hours) {
                 $template->days()->updateOrCreate(

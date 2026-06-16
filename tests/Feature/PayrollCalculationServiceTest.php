@@ -1616,6 +1616,206 @@ class PayrollCalculationServiceTest extends TestCase
         }
     }
 
+    public function test_palmetto_debt_collections_command_assigns_employee_specific_36h_templates(): void
+    {
+        $campaign = Campaign::query()->create(['name' => 'PALMETTO']);
+        $debtTeam = Team::query()->create(['name' => 'DEBT COLLECTIONS', 'campaign_id' => $campaign->id]);
+        $otherTeam = Team::query()->create(['name' => 'BDC', 'campaign_id' => $campaign->id]);
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Diurna',
+            'code' => 'diurna',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Palmetto 36h',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-05',
+            'status' => 'en_revision',
+        ]);
+        $mondayEmployee = Employee::query()->create([
+            'name' => 'Iris Lunes',
+            'campaign_id' => $campaign->id,
+            'team_id' => $debtTeam->id,
+            'schedule_type_id' => $schedule->id,
+            'weekly_hours' => 36,
+            'ordinary_weekly_hours' => 36,
+            'daily_hours' => 7.2,
+            'hourly_rate' => 10,
+            'active' => true,
+        ]);
+        $wednesdayEmployee = Employee::query()->create([
+            'name' => 'Carlos Miércoles',
+            'campaign_id' => $campaign->id,
+            'team_id' => $debtTeam->id,
+            'schedule_type_id' => $schedule->id,
+            'weekly_hours' => 36,
+            'ordinary_weekly_hours' => 36,
+            'daily_hours' => 7.2,
+            'hourly_rate' => 10,
+            'active' => true,
+        ]);
+        $fortyHourEmployee = Employee::query()->create([
+            'name' => 'Empleado 40h',
+            'campaign_id' => $campaign->id,
+            'team_id' => $debtTeam->id,
+            'schedule_type_id' => $schedule->id,
+            'weekly_hours' => 40,
+            'ordinary_weekly_hours' => 40,
+            'daily_hours' => 8,
+            'hourly_rate' => 10,
+            'active' => true,
+        ]);
+        $otherTeamEmployee = Employee::query()->create([
+            'name' => 'Empleado otro team',
+            'campaign_id' => $campaign->id,
+            'team_id' => $otherTeam->id,
+            'schedule_type_id' => $schedule->id,
+            'weekly_hours' => 36,
+            'ordinary_weekly_hours' => 36,
+            'daily_hours' => 7.2,
+            'hourly_rate' => 10,
+            'active' => true,
+        ]);
+
+        foreach (CarbonPeriod::create('2026-06-01', '2026-06-05') as $date) {
+            HubstaffTimeEntry::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $mondayEmployee->id,
+                'hubstaff_member' => $mondayEmployee->name,
+                'date' => $date->toDateString(),
+                'total_seconds' => $date->dayOfWeekIso === 1 ? 28800 : 25200,
+            ]);
+            HubstaffTimeEntry::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $wednesdayEmployee->id,
+                'hubstaff_member' => $wednesdayEmployee->name,
+                'date' => $date->toDateString(),
+                'total_seconds' => $date->dayOfWeekIso === 3 ? 28800 : 25200,
+            ]);
+            HubstaffTimeEntry::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $fortyHourEmployee->id,
+                'hubstaff_member' => $fortyHourEmployee->name,
+                'date' => $date->toDateString(),
+                'total_seconds' => 28800,
+            ]);
+            HubstaffTimeEntry::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $otherTeamEmployee->id,
+                'hubstaff_member' => $otherTeamEmployee->name,
+                'date' => $date->toDateString(),
+                'total_seconds' => $date->dayOfWeekIso === 2 ? 28800 : 25200,
+            ]);
+        }
+
+        $service = app(PayrollCalculationService::class);
+        $service->generateDailyReviews($period);
+        $manualReview = DailyTimeReview::query()
+            ->where('employee_id', $mondayEmployee->id)
+            ->whereDate('date', '2026-06-02')
+            ->firstOrFail();
+        $manualReview->update([
+            'status' => 'revisado_supervisor',
+            'justified_absence_seconds' => 900,
+            'supervisor_comment' => 'Justificación ya revisada',
+        ]);
+
+        $previewExitCode = Artisan::call('payroll:apply-palmetto-36h-schedules', [
+            '--period' => $period->id,
+        ]);
+        $this->assertSame(0, $previewExitCode, Artisan::output());
+
+        $applyExitCode = Artisan::call('payroll:apply-palmetto-36h-schedules', [
+            '--period' => $period->id,
+            '--apply' => true,
+        ]);
+        $this->assertSame(0, $applyExitCode, Artisan::output());
+
+        $this->assertSame('Diurna 36h - lunes 8h', $mondayEmployee->fresh('workScheduleTemplate')->workScheduleTemplate?->name);
+        $this->assertSame('Diurna 36h - miércoles 8h', $wednesdayEmployee->fresh('workScheduleTemplate')->workScheduleTemplate?->name);
+        $this->assertNull($fortyHourEmployee->fresh()->work_schedule_template_id);
+        $this->assertNull($otherTeamEmployee->fresh()->work_schedule_template_id);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $mondayEmployee->id,
+            'date' => '2026-06-01 00:00:00',
+            'expected_ordinary_seconds' => 28800,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $mondayEmployee->id,
+            'date' => '2026-06-02 00:00:00',
+            'expected_ordinary_seconds' => 25200,
+            'justified_absence_seconds' => 900,
+            'status' => 'revisado_supervisor',
+            'supervisor_comment' => 'Justificación ya revisada',
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $wednesdayEmployee->id,
+            'date' => '2026-06-03 00:00:00',
+            'expected_ordinary_seconds' => 28800,
+        ]);
+    }
+
+    public function test_palmetto_debt_collections_command_can_skip_employees_without_hubstaff_inference(): void
+    {
+        $campaign = Campaign::query()->create(['name' => 'PALMETTO']);
+        $team = Team::query()->create(['name' => 'DEBT COLLECTIONS', 'campaign_id' => $campaign->id]);
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Diurna',
+            'code' => 'diurna',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Palmetto skip',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-05',
+            'status' => 'en_revision',
+        ]);
+        $inferred = Employee::query()->create([
+            'name' => 'Empleado inferido',
+            'campaign_id' => $campaign->id,
+            'team_id' => $team->id,
+            'schedule_type_id' => $schedule->id,
+            'weekly_hours' => 36,
+            'ordinary_weekly_hours' => 36,
+            'daily_hours' => 7.2,
+            'hourly_rate' => 10,
+            'active' => true,
+        ]);
+        $notInferred = Employee::query()->create([
+            'name' => 'Empleado sin Hubstaff',
+            'campaign_id' => $campaign->id,
+            'team_id' => $team->id,
+            'schedule_type_id' => $schedule->id,
+            'weekly_hours' => 36,
+            'ordinary_weekly_hours' => 36,
+            'daily_hours' => 7.2,
+            'hourly_rate' => 10,
+            'active' => true,
+        ]);
+
+        foreach (CarbonPeriod::create('2026-06-01', '2026-06-05') as $date) {
+            HubstaffTimeEntry::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $inferred->id,
+                'hubstaff_member' => $inferred->name,
+                'date' => $date->toDateString(),
+                'total_seconds' => $date->dayOfWeekIso === 2 ? 28800 : 25200,
+            ]);
+        }
+
+        app(PayrollCalculationService::class)->generateDailyReviews($period);
+
+        $applyExitCode = Artisan::call('payroll:apply-palmetto-36h-schedules', [
+            '--period' => $period->id,
+            '--apply' => true,
+            '--skip-uninferred' => true,
+        ]);
+
+        $this->assertSame(0, $applyExitCode, Artisan::output());
+        $this->assertSame('Diurna 36h - martes 8h', $inferred->fresh('workScheduleTemplate')->workScheduleTemplate?->name);
+        $this->assertNull($notInferred->fresh()->work_schedule_template_id);
+    }
+
     /**
      * @param  array<int, float|int>  $hours
      */
