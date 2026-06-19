@@ -11,6 +11,9 @@ class ViewPayrollResult extends ViewRecord
 
     protected function getHeaderActions(): array
     {
-        return [];
+        return [
+            PayrollResultResource::previewVoucherAction(),
+            PayrollResultResource::sendVoucherAction(),
+        ];
     }
 }

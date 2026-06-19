@@ -8,12 +8,16 @@ use App\Filament\Resources\PayrollResults\Pages\EditPayrollResult;
 use App\Filament\Resources\PayrollResults\Pages\ListPayrollResults;
 use App\Filament\Resources\PayrollResults\Pages\ViewPayrollResult;
 use App\Models\PayrollResult;
+use App\Services\PayrollVoucherSender;
 use App\Services\TimeParserService;
 use BackedEnum;
+use Filament\Actions\Action;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Tabs;
 use Filament\Schemas\Components\Tabs\Tab;
@@ -192,6 +196,65 @@ class PayrollResultResource extends Resource
             'aprobado' => 'Aprobado',
             'cerrado' => 'Cerrado',
         ];
+    }
+
+    public static function sendVoucherAction(): Action
+    {
+        return Action::make('sendVoucher')
+            ->label('Enviar voucher')
+            ->icon('heroicon-o-envelope')
+            ->color('primary')
+            ->visible(fn (): bool => auth()->user()?->isRrhh() ?? false)
+            ->requiresConfirmation()
+            ->modalHeading('Enviar voucher de planilla')
+            ->modalDescription(fn (PayrollResult $record): string => filled($record->employee?->email)
+                ? 'Se enviará el voucher al correo '.$record->employee?->email.'.'
+                : 'Este empleado no tiene correo configurado. Agrega el correo en la ficha del empleado antes de enviar el voucher.')
+            ->form([
+                Textarea::make('comment')
+                    ->label('Comentario opcional')
+                    ->rows(3)
+                    ->maxLength(1000)
+                    ->nullable(),
+            ])
+            ->action(function (PayrollResult $record, array $data, PayrollVoucherSender $sender): void {
+                try {
+                    $sender->send($record, $data['comment'] ?? null);
+                } catch (\RuntimeException $exception) {
+                    Notification::make()
+                        ->title('No se pudo enviar el voucher')
+                        ->body($exception->getMessage())
+                        ->danger()
+                        ->send();
+
+                    return;
+                }
+
+                Notification::make()
+                    ->title('Voucher enviado')
+                    ->body('El voucher fue enviado al correo del empleado.')
+                    ->success()
+                    ->send();
+            });
+    }
+
+    public static function previewVoucherAction(): Action
+    {
+        return Action::make('previewVoucher')
+            ->label('Vista previa voucher')
+            ->icon('heroicon-o-eye')
+            ->color('gray')
+            ->visible(fn (): bool => auth()->user()?->isRrhh() ?? false)
+            ->modalHeading('Vista previa del voucher')
+            ->modalSubmitAction(false)
+            ->modalCancelActionLabel('Cerrar')
+            ->modalWidth('5xl')
+            ->modalContent(fn (PayrollResult $record) => view('emails.payroll-voucher', [
+                'result' => $record->loadMissing(['employee', 'payrollPeriod']),
+                'comment' => null,
+                'periodName' => $record->payrollPeriod?->name ?? 'Período de planilla',
+                'logoPath' => public_path('images/dosys-logo.jpg'),
+            ]));
     }
 
     public static function getPages(): array

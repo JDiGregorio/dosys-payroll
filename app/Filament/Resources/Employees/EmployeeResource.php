@@ -103,6 +103,11 @@ class EmployeeResource extends Resource
                 ->maxLength(255)
                 ->afterStateHydrated(fn (TextInput $component, ?Employee $record) => $component->state($record?->bank_account_number))
                 ->unique(ignoreRecord: true),
+            TextInput::make('email')
+                ->label('Correo para voucher')
+                ->email()
+                ->maxLength(255)
+                ->nullable(),
             TextInput::make('name')->label('Nombre')->required()->maxLength(255),
             TextInput::make('hubstaff_name')
                 ->label('Nombre Hubstaff')
@@ -209,6 +214,7 @@ class EmployeeResource extends Resource
                     ->label('No. cuenta')
                     ->state(fn (Employee $record): ?string => $record->bank_account_number)
                     ->searchable(),
+                TextColumn::make('email')->label('Correo')->searchable()->toggleable(),
                 TextColumn::make('name')->label('Nombre')->searchable()->sortable(),
                 TextColumn::make('campaign.name')->label('Campaña')->sortable(),
                 TextColumn::make('team.name')->label('Team')->sortable(),

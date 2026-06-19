@@ -15,6 +15,8 @@ class EditPayrollResult extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            PayrollResultResource::previewVoucherAction(),
+            PayrollResultResource::sendVoucherAction(),
             Action::make('recalculateEmployee')
                 ->label('Recalcular empleado')
                 ->icon('heroicon-o-arrow-path')
