@@ -35,6 +35,7 @@ class PayrollVoucherSenderTest extends TestCase
             'monthly_salary' => 15000,
             'biweekly_salary_amount' => 7500,
             'worked_days' => 15,
+            'worked_salary_amount' => 7500,
             'overtime_amount' => 500,
             'internet_subsidy_amount' => 300,
             'qa_bonus_amount' => 100,
@@ -74,6 +75,7 @@ class PayrollVoucherSenderTest extends TestCase
             'monthly_salary' => 15000,
             'biweekly_salary_amount' => 7500,
             'worked_days' => 15,
+            'worked_salary_amount' => 7500,
             'overtime_amount' => 500,
             'internet_subsidy_amount' => 300,
             'qa_bonus_amount' => 100,
@@ -92,8 +94,12 @@ class PayrollVoucherSenderTest extends TestCase
         $this->assertStringContainsString('Voucher de planilla', $html);
         $this->assertStringContainsString('Primera quincena junio 2026', $html);
         $this->assertStringContainsString('Ailen Test', $html);
+        $this->assertStringContainsString('Bonificaciones', $html);
+        $this->assertStringContainsString('Deducciones', $html);
+        $this->assertStringContainsString('Total bonificaciones', $html);
         $this->assertStringContainsString('L 8,300.00', $html);
         $this->assertStringContainsString('Comentario institucional', $html);
+        $this->assertStringNotContainsString('Días trabajados', $html);
     }
 
     public function test_it_does_not_send_voucher_when_employee_has_no_email(): void
