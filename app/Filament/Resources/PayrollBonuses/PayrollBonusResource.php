@@ -7,6 +7,7 @@ use App\Filament\Resources\PayrollBonuses\Pages\EditPayrollBonus;
 use App\Filament\Resources\PayrollBonuses\Pages\ListPayrollBonuses;
 use App\Models\Employee;
 use App\Models\PayrollBonus;
+use App\Models\PayrollPeriod;
 use BackedEnum;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
@@ -43,7 +44,9 @@ class PayrollBonusResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        $query = parent::getEloquentQuery()->with(['employee', 'team', 'campaign', 'payrollPeriod']);
+        $query = parent::getEloquentQuery()
+            ->whereHas('payrollPeriod', fn (Builder $query) => $query->open())
+            ->with(['employee', 'team', 'campaign', 'payrollPeriod']);
         $user = auth()->user();
 
         if ($user?->isSupervisor()) {
@@ -60,22 +63,24 @@ class PayrollBonusResource extends Resource
 
     public static function canCreate(): bool
     {
-        return (bool) auth()->user()?->active;
+        return (bool) auth()->user()?->active && PayrollPeriod::hasOpenPeriod();
     }
 
     public static function canEdit(Model $record): bool
     {
         $user = auth()->user();
 
-        return $user?->isRrhh()
+        return $record->payrollPeriod?->status !== 'cerrado'
+            && ($user?->isRrhh()
             || ($user?->isSupervisor()
                 && $record->employee?->supervisor_user_id === $user->id
-                && $record->payrollPeriod?->status !== 'cerrado');
+                && $record->payrollPeriod?->status !== 'cerrado'));
     }
 
     public static function canDelete(Model $record): bool
     {
-        return auth()->user()?->isRrhh() ?? false;
+        return (auth()->user()?->isRrhh() ?? false)
+            && $record->payrollPeriod?->status !== 'cerrado';
     }
 
     public static function canDeleteAny(): bool
@@ -88,7 +93,7 @@ class PayrollBonusResource extends Resource
         return $schema->components([
             Select::make('payroll_period_id')
                 ->label('Período')
-                ->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->where('status', '!=', 'cerrado'))
+                ->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->open())
                 ->required(),
             Select::make('scope_type')->label('Aplica a')->options([
                 'employee' => 'Empleado',
@@ -130,7 +135,7 @@ class PayrollBonusResource extends Resource
                 TextColumn::make('amount')->label('Monto')->money('HNL', locale: 'en-US')->sortable(),
             ])
             ->filters([
-                SelectFilter::make('payroll_period_id')->relationship('payrollPeriod', 'name')->label('Período'),
+                SelectFilter::make('payroll_period_id')->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->open())->label('Período'),
                 SelectFilter::make('type')->label('Tipo')->options(self::typeOptions()),
             ])
             ->recordActions([

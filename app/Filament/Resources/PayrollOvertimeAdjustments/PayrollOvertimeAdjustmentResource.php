@@ -6,6 +6,7 @@ use App\Filament\Resources\PayrollOvertimeAdjustments\Pages\CreatePayrollOvertim
 use App\Filament\Resources\PayrollOvertimeAdjustments\Pages\EditPayrollOvertimeAdjustment;
 use App\Filament\Resources\PayrollOvertimeAdjustments\Pages\ListPayrollOvertimeAdjustments;
 use App\Models\Employee;
+use App\Models\PayrollPeriod;
 use App\Models\PayrollOvertimeAdjustment;
 use BackedEnum;
 use Filament\Actions\BulkActionGroup;
@@ -45,7 +46,9 @@ class PayrollOvertimeAdjustmentResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        $query = parent::getEloquentQuery()->with(['employee', 'payrollPeriod']);
+        $query = parent::getEloquentQuery()
+            ->whereHas('payrollPeriod', fn (Builder $query) => $query->open())
+            ->with(['employee', 'payrollPeriod']);
 
         if (auth()->user()?->isSupervisor()) {
             $query->whereHas('employee', fn (Builder $query) => $query->visibleTo(auth()->user()));
@@ -61,17 +64,18 @@ class PayrollOvertimeAdjustmentResource extends Resource
 
     public static function canCreate(): bool
     {
-        return (bool) auth()->user()?->active;
+        return (bool) auth()->user()?->active && PayrollPeriod::hasOpenPeriod();
     }
 
     public static function canEdit(Model $record): bool
     {
         $user = auth()->user();
 
-        return $user?->isRrhh()
+        return $record->payrollPeriod?->status !== 'cerrado'
+            && ($user?->isRrhh()
             || ($user?->isSupervisor()
                 && $record->employee?->supervisor_user_id === $user->id
-                && $record->payrollPeriod?->status !== 'cerrado');
+                && $record->payrollPeriod?->status !== 'cerrado'));
     }
 
     public static function canDelete(Model $record): bool
@@ -94,7 +98,7 @@ class PayrollOvertimeAdjustmentResource extends Resource
         return $schema->components([
             Select::make('payroll_period_id')
                 ->label('Período')
-                ->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->where('status', '!=', 'cerrado'))
+                ->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->open())
                 ->searchable()
                 ->preload()
                 ->required(),
@@ -148,7 +152,7 @@ class PayrollOvertimeAdjustmentResource extends Resource
                 IconColumn::make('active')->label('Activo')->boolean(),
             ])
             ->filters([
-                SelectFilter::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name'),
+                SelectFilter::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->open()),
                 SelectFilter::make('employee_id')
                     ->label('Empleado')
                     ->relationship('employee', 'name', modifyQueryUsing: fn (Builder $query) => $query->visibleTo(auth()->user()))

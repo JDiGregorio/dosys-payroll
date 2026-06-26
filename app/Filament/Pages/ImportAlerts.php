@@ -41,12 +41,12 @@ class ImportAlerts extends Page
 
     public function mount(): void
     {
-        $this->periodId = PayrollPeriod::query()->where('status', '!=', 'cerrado')->latest('starts_at')->value('id');
+        $this->periodId = PayrollPeriod::query()->open()->latest('starts_at')->value('id');
     }
 
     public function periods(): Collection
     {
-        return PayrollPeriod::query()->where('status', '!=', 'cerrado')->orderByDesc('starts_at')->get();
+        return PayrollPeriod::query()->open()->orderByDesc('starts_at')->get();
     }
 
     public function selectedPeriod(): ?PayrollPeriod
@@ -56,7 +56,7 @@ class ImportAlerts extends Page
 
     public function unmappedMembers(): Collection
     {
-        if (! auth()->user()?->isRrhh()) {
+        if (! $this->periodId || ! auth()->user()?->isRrhh()) {
             return collect();
         }
 
@@ -101,6 +101,10 @@ class ImportAlerts extends Page
         return DailyTimeReview::query()
             ->with('employee.campaign', 'employee.team')
             ->whereHas('employee', fn (Builder $query) => $query->visibleTo(auth()->user()))
-            ->when($this->periodId, fn (Builder $query) => $query->where('payroll_period_id', $this->periodId));
+            ->when(
+                $this->periodId,
+                fn (Builder $query) => $query->where('payroll_period_id', $this->periodId),
+                fn (Builder $query) => $query->whereRaw('1 = 0'),
+            );
     }
 }

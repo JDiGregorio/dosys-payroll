@@ -62,6 +62,12 @@ class PayrollPeriodResource extends Resource
         return auth()->user()?->isRrhh() ?? false;
     }
 
+    public static function canCreate(): bool
+    {
+        return (auth()->user()?->isRrhh() ?? false)
+            && ! PayrollPeriod::hasOpenPeriod();
+    }
+
     public static function form(Schema $schema): Schema
     {
         return $schema->components([

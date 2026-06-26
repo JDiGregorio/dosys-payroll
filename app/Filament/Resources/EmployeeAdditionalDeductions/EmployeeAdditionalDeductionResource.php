@@ -7,6 +7,7 @@ use App\Filament\Resources\EmployeeAdditionalDeductions\Pages\CreateEmployeeAddi
 use App\Filament\Resources\EmployeeAdditionalDeductions\Pages\EditEmployeeAdditionalDeduction;
 use App\Filament\Resources\EmployeeAdditionalDeductions\Pages\ListEmployeeAdditionalDeductions;
 use App\Models\EmployeeAdditionalDeduction;
+use App\Models\PayrollPeriod;
 use BackedEnum;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -21,6 +22,8 @@ use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 
 class EmployeeAdditionalDeductionResource extends Resource
 {
@@ -45,10 +48,33 @@ class EmployeeAdditionalDeductionResource extends Resource
         return auth()->user()?->isRrhh() ?? false;
     }
 
+    public static function getEloquentQuery(): Builder
+    {
+        return parent::getEloquentQuery()
+            ->whereHas('payrollPeriod', fn (Builder $query) => $query->open())
+            ->with(['employee', 'payrollPeriod']);
+    }
+
+    public static function canCreate(): bool
+    {
+        return (auth()->user()?->isRrhh() ?? false) && PayrollPeriod::hasOpenPeriod();
+    }
+
+    public static function canEdit(Model $record): bool
+    {
+        return (auth()->user()?->isRrhh() ?? false)
+            && $record->payrollPeriod?->status !== 'cerrado';
+    }
+
+    public static function canDelete(Model $record): bool
+    {
+        return self::canEdit($record);
+    }
+
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            Select::make('payroll_period_id')->label('Período a cobrar')->relationship('payrollPeriod', 'name')->searchable()->preload()->required(),
+            Select::make('payroll_period_id')->label('Período a cobrar')->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->open())->searchable()->preload()->required(),
             Select::make('employee_id')->label('Empleado')->relationship('employee', 'name')->searchable()->preload()->required(),
             TextInput::make('amount')->label('Monto')->numeric()->minValue(0.01)->default(0)->required(),
             TextInput::make('description')->label('Descripción')->maxLength(255)->required(),
@@ -67,7 +93,7 @@ class EmployeeAdditionalDeductionResource extends Resource
                 IconColumn::make('active')->label('Activo')->boolean(),
             ])
             ->filters([
-                SelectFilter::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name'),
+                SelectFilter::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->open()),
                 SelectFilter::make('employee_id')->label('Empleado')->relationship('employee', 'name')->searchable(),
             ])
             ->recordActions([

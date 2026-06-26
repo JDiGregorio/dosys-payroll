@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -57,5 +58,20 @@ class PayrollPeriod extends Model
     public function payrollResults(): HasMany
     {
         return $this->hasMany(PayrollResult::class);
+    }
+
+    public function scopeOpen(Builder $query): Builder
+    {
+        return $query->where('status', '!=', 'cerrado');
+    }
+
+    public function scopeClosed(Builder $query): Builder
+    {
+        return $query->where('status', 'cerrado');
+    }
+
+    public static function hasOpenPeriod(): bool
+    {
+        return static::query()->open()->exists();
     }
 }

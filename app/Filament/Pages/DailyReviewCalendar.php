@@ -57,7 +57,7 @@ class DailyReviewCalendar extends Page
 
     public function periods(): Collection
     {
-        return PayrollPeriod::query()->where('status', '!=', 'cerrado')->orderByDesc('starts_at')->get();
+        return PayrollPeriod::query()->orderByRaw("case when status = 'cerrado' then 1 else 0 end")->orderByDesc('starts_at')->get();
     }
 
     public function employees(): Collection
@@ -175,11 +175,12 @@ class DailyReviewCalendar extends Page
 
     private function resolvePeriodId(?int $periodId): ?int
     {
-        if ($periodId && PayrollPeriod::query()->where('status', '!=', 'cerrado')->whereKey($periodId)->exists()) {
+        if ($periodId && PayrollPeriod::query()->whereKey($periodId)->exists()) {
             return $periodId;
         }
 
-        return PayrollPeriod::query()->where('status', '!=', 'cerrado')->latest('starts_at')->value('id');
+        return PayrollPeriod::query()->open()->latest('starts_at')->value('id')
+            ?? PayrollPeriod::query()->latest('starts_at')->value('id');
     }
 
     private function resolveEmployeeId(?int $employeeId): ?int

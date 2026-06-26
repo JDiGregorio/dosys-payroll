@@ -6,16 +6,26 @@ use App\Filament\Pages\DailyReviewCalendar;
 use App\Filament\Pages\ImportAlerts;
 use App\Filament\Resources\Campaigns\CampaignResource;
 use App\Filament\Resources\DailyTimeReviews\DailyTimeReviewResource;
+use App\Filament\Resources\EmployeeAdditionalDeductions\EmployeeAdditionalDeductionResource;
 use App\Filament\Resources\Employees\EmployeeResource;
 use App\Filament\Resources\Employees\Pages\EditEmployee;
 use App\Filament\Resources\Employees\Pages\ListEmployees;
+use App\Filament\Resources\PayrollBonuses\PayrollBonusResource;
+use App\Filament\Resources\PayrollDeductions\PayrollDeductionResource;
+use App\Filament\Resources\PayrollOvertimeAdjustments\PayrollOvertimeAdjustmentResource;
 use App\Filament\Resources\PayrollPeriods\Pages\ListPayrollPeriods;
+use App\Filament\Resources\PayrollPeriods\PayrollPeriodResource;
 use App\Models\Campaign;
 use App\Models\ContractType;
 use App\Models\DailyTimeReview;
+use App\Models\DeductionType;
 use App\Models\Department;
+use App\Models\EmployeeAdditionalDeduction;
 use App\Models\Employee;
 use App\Models\HubstaffTimeEntry;
+use App\Models\PayrollBonus;
+use App\Models\PayrollDeduction;
+use App\Models\PayrollOvertimeAdjustment;
 use App\Models\PayrollPeriod;
 use App\Models\PayrollResult;
 use App\Models\ScheduleType;
@@ -293,6 +303,44 @@ class FilamentPagesTest extends TestCase
         );
     }
 
+    public function test_daily_review_calendar_can_select_closed_periods_for_reference(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Closed Calendar',
+            'email' => 'calendar-closed-rrhh@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Junio cerrado',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+            'status' => 'cerrado',
+        ]);
+        $employee = Employee::query()->create(['name' => 'Empleado Cerrado Calendar', 'active' => true]);
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-06-01',
+            'expected_seconds' => 28800,
+            'hubstaff_total_seconds' => 28800,
+            'payable_seconds' => 28800,
+        ]);
+
+        $this->actingAs($user);
+
+        Livewire::withQueryParams([
+            'period_id' => $period->id,
+            'employee_id' => $employee->id,
+        ])
+            ->test(DailyReviewCalendar::class)
+            ->assertSet('periodId', $period->id)
+            ->assertSet('employeeId', $employee->id)
+            ->assertSee('Junio cerrado')
+            ->assertSee('Empleado Cerrado Calendar');
+    }
+
     public function test_daily_review_calendar_query_string_filters_visible_employee_reviews(): void
     {
         $user = User::query()->create([
@@ -548,6 +596,50 @@ class FilamentPagesTest extends TestCase
         $this->assertTrue($page->unmappedMembers()->isEmpty());
     }
 
+    public function test_import_alerts_are_empty_when_there_is_no_open_period(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Closed Alerts',
+            'email' => 'rrhh-closed-alerts@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Alertas cerradas',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+            'status' => 'cerrado',
+        ]);
+        $employee = Employee::query()->create(['name' => 'Empleado alerta cerrada', 'active' => true]);
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-06-01',
+            'expected_paid_seconds' => 32400,
+            'payable_seconds' => 28800,
+            'unjustified_absence_seconds' => 3600,
+            'hubstaff_idle_seconds' => 600,
+        ]);
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'hubstaff_member' => 'Sin mapeo cerrado',
+            'date' => '2026-06-01',
+        ]);
+
+        $this->actingAs($user);
+
+        $component = Livewire::test(ImportAlerts::class)
+            ->assertSet('periodId', null);
+
+        $page = $component->instance();
+
+        $this->assertTrue($page->periods()->isEmpty());
+        $this->assertTrue($page->shortPayableDays()->isEmpty());
+        $this->assertTrue($page->highIdleDays()->isEmpty());
+        $this->assertTrue($page->unmappedMembers()->isEmpty());
+    }
+
     public function test_supervisor_daily_review_calendar_only_lists_assigned_employees(): void
     {
         $supervisor = User::query()->create([
@@ -667,6 +759,38 @@ class FilamentPagesTest extends TestCase
             ->assertDontSee('Horas pagadas esperadas')
             ->assertDontSee('Horas Hubstaff')
             ->assertDontSee('Horas pagables');
+    }
+
+    public function test_payroll_results_index_can_show_closed_period_results(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Closed Results',
+            'email' => 'rrhh-closed-results@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Resultados cerrados',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+            'status' => 'cerrado',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado resultado cerrado',
+            'active' => true,
+        ]);
+        PayrollResult::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'net_amount' => 1234.56,
+        ]);
+
+        $this->actingAs($user);
+
+        $this->get('/admin/payroll-results')
+            ->assertOk()
+            ->assertSee('Empleado resultado cerrado');
     }
 
     public function test_daily_review_edit_shows_hubstaff_detail_tab(): void
@@ -798,5 +922,122 @@ class FilamentPagesTest extends TestCase
             ->assertNotified();
 
         $this->assertSame('cerrado', $period->fresh()->status);
+    }
+
+    public function test_period_creation_is_blocked_while_an_open_period_exists(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Create Period',
+            'email' => 'rrhh-create-period@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+
+        $this->actingAs($user);
+
+        $this->assertTrue(PayrollPeriodResource::canCreate());
+
+        PayrollPeriod::query()->create([
+            'name' => 'Período abierto',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+            'status' => 'en_revision',
+        ]);
+
+        $this->assertFalse(PayrollPeriodResource::canCreate());
+    }
+
+    public function test_closed_period_operational_records_are_hidden_from_active_modules(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Operational Closed',
+            'email' => 'rrhh-operational-closed@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $openPeriod = PayrollPeriod::query()->create([
+            'name' => 'Operativo abierto',
+            'starts_at' => '2026-06-16',
+            'ends_at' => '2026-06-30',
+            'status' => 'en_revision',
+        ]);
+        $closedPeriod = PayrollPeriod::query()->create([
+            'name' => 'Operativo cerrado',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+            'status' => 'cerrado',
+        ]);
+        $employee = Employee::query()->create(['name' => 'Empleado operativo', 'active' => true]);
+        $deductionType = DeductionType::query()->create([
+            'name' => 'Deducción operativa',
+            'code' => 'operational_test',
+            'calculation_type' => 'manual',
+        ]);
+
+        $openBonus = PayrollBonus::query()->create([
+            'payroll_period_id' => $openPeriod->id,
+            'employee_id' => $employee->id,
+            'scope_type' => 'employee',
+            'type' => 'manual',
+            'amount' => 10,
+        ]);
+        $closedBonus = PayrollBonus::query()->create([
+            'payroll_period_id' => $closedPeriod->id,
+            'employee_id' => $employee->id,
+            'scope_type' => 'employee',
+            'type' => 'manual',
+            'amount' => 20,
+        ]);
+        $openOvertime = PayrollOvertimeAdjustment::query()->create([
+            'payroll_period_id' => $openPeriod->id,
+            'employee_id' => $employee->id,
+            'hours' => 1,
+            'hourly_rate' => 100,
+            'amount' => 100,
+        ]);
+        $closedOvertime = PayrollOvertimeAdjustment::query()->create([
+            'payroll_period_id' => $closedPeriod->id,
+            'employee_id' => $employee->id,
+            'hours' => 2,
+            'hourly_rate' => 100,
+            'amount' => 200,
+        ]);
+        $openAdditionalDeduction = EmployeeAdditionalDeduction::query()->create([
+            'payroll_period_id' => $openPeriod->id,
+            'employee_id' => $employee->id,
+            'amount' => 30,
+            'description' => 'Abierta',
+            'active' => true,
+        ]);
+        $closedAdditionalDeduction = EmployeeAdditionalDeduction::query()->create([
+            'payroll_period_id' => $closedPeriod->id,
+            'employee_id' => $employee->id,
+            'amount' => 40,
+            'description' => 'Cerrada',
+            'active' => true,
+        ]);
+        $openDeduction = PayrollDeduction::query()->create([
+            'payroll_period_id' => $openPeriod->id,
+            'employee_id' => $employee->id,
+            'deduction_type_id' => $deductionType->id,
+            'amount' => 50,
+            'status' => 'aprobado',
+        ]);
+        $closedDeduction = PayrollDeduction::query()->create([
+            'payroll_period_id' => $closedPeriod->id,
+            'employee_id' => $employee->id,
+            'deduction_type_id' => $deductionType->id,
+            'amount' => 60,
+            'status' => 'aprobado',
+        ]);
+
+        $this->actingAs($user);
+
+        $this->assertSame([$openBonus->id], PayrollBonusResource::getEloquentQuery()->whereKey([$openBonus->id, $closedBonus->id])->pluck('id')->all());
+        $this->assertSame([$openOvertime->id], PayrollOvertimeAdjustmentResource::getEloquentQuery()->whereKey([$openOvertime->id, $closedOvertime->id])->pluck('id')->all());
+        $this->assertSame([$openAdditionalDeduction->id], EmployeeAdditionalDeductionResource::getEloquentQuery()->whereKey([$openAdditionalDeduction->id, $closedAdditionalDeduction->id])->pluck('id')->all());
+        $this->assertSame([$openDeduction->id], PayrollDeductionResource::getEloquentQuery()->whereKey([$openDeduction->id, $closedDeduction->id])->pluck('id')->all());
     }
 }

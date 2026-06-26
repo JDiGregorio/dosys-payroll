@@ -7,6 +7,7 @@ use App\Filament\Resources\PayrollDeductions\Pages\CreatePayrollDeduction;
 use App\Filament\Resources\PayrollDeductions\Pages\EditPayrollDeduction;
 use App\Filament\Resources\PayrollDeductions\Pages\ListPayrollDeductions;
 use App\Models\PayrollDeduction;
+use App\Models\PayrollPeriod;
 use App\Services\PayrollCalculationService;
 use BackedEnum;
 use Filament\Actions\BulkActionGroup;
@@ -20,6 +21,8 @@ use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 
 class PayrollDeductionResource extends Resource
 {
@@ -44,10 +47,33 @@ class PayrollDeductionResource extends Resource
         return false;
     }
 
+    public static function getEloquentQuery(): Builder
+    {
+        return parent::getEloquentQuery()
+            ->whereHas('payrollPeriod', fn (Builder $query) => $query->open())
+            ->with(['employee', 'deductionType', 'payrollPeriod']);
+    }
+
+    public static function canCreate(): bool
+    {
+        return (auth()->user()?->isRrhh() ?? false) && PayrollPeriod::hasOpenPeriod();
+    }
+
+    public static function canEdit(Model $record): bool
+    {
+        return (auth()->user()?->isRrhh() ?? false)
+            && $record->payrollPeriod?->status !== 'cerrado';
+    }
+
+    public static function canDelete(Model $record): bool
+    {
+        return self::canEdit($record);
+    }
+
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            Select::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name')->required(),
+            Select::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->open())->required(),
             Select::make('employee_id')->label('Empleado')->relationship('employee', 'name')->searchable()->preload()->required(),
             Select::make('deduction_type_id')->label('Tipo de deducción')->relationship('deductionType', 'name')->searchable()->preload()->required(),
             TextInput::make('amount')->label('Monto')->numeric()->default(0)->required(),
@@ -69,7 +95,7 @@ class PayrollDeductionResource extends Resource
             TextColumn::make('amount')->label('Monto')->money('HNL', locale: 'en-US'),
             TextColumn::make('status')->label('Estado')->badge(),
         ])->filters([
-            SelectFilter::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name'),
+            SelectFilter::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->open()),
             SelectFilter::make('status')->label('Estado')->options(['borrador' => 'Borrador', 'aprobado' => 'Aprobado', 'rechazado' => 'Rechazado']),
         ])->recordActions([
             EditAction::make()->label('Editar')->after(fn (PayrollDeduction $record) => app(PayrollCalculationService::class)->recalculateEmployeePayrollResult($record->payrollPeriod, $record->employee)),
