@@ -301,15 +301,6 @@ class PayrollPeriodResource extends Resource
                     return;
                 }
 
-                if ($record->dailyTimeReviews()
-                    ->whereBetween('date', [$record->starts_at, $record->ends_at])
-                    ->where('status', 'pendiente')
-                    ->exists()) {
-                    Notification::make()->title('No se puede cerrar: hay revisiones diarias pendientes')->danger()->send();
-
-                    return;
-                }
-
                 $service->recalculatePeriodPreservingManual($record);
 
                 $record->update(['status' => 'cerrado']);

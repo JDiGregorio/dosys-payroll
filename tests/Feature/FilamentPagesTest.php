@@ -5,9 +5,11 @@ namespace Tests\Feature;
 use App\Filament\Pages\DailyReviewCalendar;
 use App\Filament\Pages\ImportAlerts;
 use App\Filament\Resources\Campaigns\CampaignResource;
+use App\Filament\Resources\DailyTimeReviews\DailyTimeReviewResource;
 use App\Filament\Resources\Employees\EmployeeResource;
 use App\Filament\Resources\Employees\Pages\EditEmployee;
 use App\Filament\Resources\Employees\Pages\ListEmployees;
+use App\Filament\Resources\PayrollPeriods\Pages\ListPayrollPeriods;
 use App\Models\Campaign;
 use App\Models\ContractType;
 use App\Models\DailyTimeReview;
@@ -709,5 +711,92 @@ class FilamentPagesTest extends TestCase
             ->assertSee('Registros de Hubstaff')
             ->assertSee('Operations Detail')
             ->assertSee('7:30:00');
+    }
+
+    public function test_pending_daily_review_with_zero_or_positive_difference_is_displayed_as_correct(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Badge correcto',
+            'starts_at' => '2026-06-10',
+            'ends_at' => '2026-06-12',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado badge correcto',
+            'active' => true,
+        ]);
+        $review = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-06-10',
+            'status' => 'pendiente',
+            'hubstaff_total_seconds' => 28800,
+            'payable_seconds' => 28800,
+            'hubstaff_idle_seconds' => 0,
+            'difference_seconds' => 0,
+        ]);
+        $positiveReview = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-06-11',
+            'status' => 'pendiente',
+            'hubstaff_total_seconds' => 30600,
+            'payable_seconds' => 30600,
+            'hubstaff_idle_seconds' => 600,
+            'difference_seconds' => 1800,
+        ]);
+
+        $pendingReview = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-06-12',
+            'status' => 'pendiente',
+            'hubstaff_total_seconds' => 27000,
+            'payable_seconds' => 27000,
+            'hubstaff_idle_seconds' => 0,
+            'difference_seconds' => -1800,
+        ]);
+
+        $this->assertSame('Correcto', DailyTimeReviewResource::displayStatusLabel($review));
+        $this->assertSame('Correcto', DailyTimeReviewResource::displayStatusLabel($positiveReview));
+        $this->assertSame('pendiente', $review->fresh()->status);
+        $this->assertSame('Pendiente', DailyTimeReviewResource::displayStatusLabel($pendingReview));
+    }
+
+    public function test_rrhh_can_close_period_with_pending_daily_reviews(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Close',
+            'email' => 'rrhh-close@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Cierre con pendientes',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+            'status' => 'en_revision',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado pendiente cierre',
+            'active' => true,
+        ]);
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-06-10',
+            'status' => 'pendiente',
+            'hubstaff_total_seconds' => 27000,
+            'payable_seconds' => 27000,
+            'difference_seconds' => -1800,
+        ]);
+
+        $this->actingAs($user);
+
+        Livewire::test(ListPayrollPeriods::class)
+            ->callTableAction('closePeriod', $period)
+            ->assertNotified();
+
+        $this->assertSame('cerrado', $period->fresh()->status);
     }
 }

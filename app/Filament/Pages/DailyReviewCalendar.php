@@ -153,6 +153,16 @@ class DailyReviewCalendar extends Page
         };
     }
 
+    public function reviewStatusLabel(?DailyTimeReview $review): string
+    {
+        return DailyTimeReviewResource::displayStatusLabel($review);
+    }
+
+    public function isCorrectPendingReview(?DailyTimeReview $review): bool
+    {
+        return DailyTimeReviewResource::isCorrectPendingReview($review);
+    }
+
     public function statusClasses(?string $status): string
     {
         return match ($status) {

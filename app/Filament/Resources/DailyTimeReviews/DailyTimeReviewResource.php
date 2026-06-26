@@ -160,7 +160,7 @@ class DailyTimeReviewResource extends Resource
                 self::hoursColumn('payable_seconds', 'Horas pagables'),
                 self::hoursColumn('difference_seconds', 'Diferencia'),
                 IconColumn::make('assigned_overtime_fulfilled')->label('Hora extra cumplida')->boolean()->toggleable(),
-                TextColumn::make('status')->label('Estado')->badge()->formatStateUsing(fn (string $state) => self::statusOptions()[$state] ?? $state),
+                TextColumn::make('status')->label('Estado')->badge()->state(fn (DailyTimeReview $record): string => self::displayStatusLabel($record)),
                 TextColumn::make('supervisor_comment')->label('Comentario supervisor')->limit(30)->toggleable(),
                 TextColumn::make('rrhh_comment')->label('Comentario RRHH')->limit(30)->toggleable(),
             ])
@@ -280,6 +280,23 @@ class DailyTimeReviewResource extends Resource
             'revisado_supervisor' => 'Aplicado',
             'aprobado_rrhh' => 'Aplicado',
         ];
+    }
+
+    public static function displayStatusLabel(?DailyTimeReview $record): string
+    {
+        if (self::isCorrectPendingReview($record)) {
+            return 'Correcto';
+        }
+
+        return self::statusOptions()[$record?->status] ?? 'Sin revisión';
+    }
+
+    public static function isCorrectPendingReview(?DailyTimeReview $record): bool
+    {
+        return $record !== null
+            && $record->status === 'pendiente'
+            && (int) $record->hubstaff_total_seconds > 0
+            && (int) $record->difference_seconds >= 0;
     }
 
     private static function recalculateReviewAndPayroll(DailyTimeReview $record, PayrollCalculationService $service): void

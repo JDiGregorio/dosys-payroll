@@ -292,11 +292,7 @@
         ))
         : collect();
 
-    $statusLabel = fn (?string $status): string => match ($status) {
-        'pendiente' => 'Pendiente',
-        'revisado_supervisor', 'aprobado_rrhh' => 'Aplicada',
-        default => 'Sin revisión',
-    };
+    $statusLabel = fn (?DailyTimeReview $review): string => DailyTimeReviewResource::displayStatusLabel($review);
 @endphp
 
 <div class="dr-page">
@@ -333,7 +329,9 @@
                                 $hasHubstaff = (int) ($review?->hubstaff_total_seconds ?? 0) > 0;
                                 $isOff = (bool) ($review?->paid_day_off ?? false);
                                 $isJustifiedAbsence = $review && ! $hasHubstaff && (int) $review->justified_absence_seconds >= (int) $review->expected_seconds && (int) $review->expected_seconds > 0;
+                                $isCorrectPending = DailyTimeReviewResource::isCorrectPendingReview($review);
                                 $eventClass = match (true) {
+                                    $isCorrectPending => 'dr-event-ok',
                                     $isOff => 'dr-event-ok',
                                     $isJustifiedAbsence => 'dr-event-review',
                                     $review && ! $hasHubstaff => '',
@@ -343,11 +341,14 @@
                                         default => '',
                                     },
                                 };
-                                $badgeClass = match ($review?->status) {
+                                $badgeClass = match (true) {
+                                    $isCorrectPending => 'dr-badge-approved',
+                                    default => match ($review?->status) {
                                     'pendiente' => 'dr-badge-pending',
                                     'revisado_supervisor' => 'dr-badge-reviewed',
                                     'aprobado_rrhh' => 'dr-badge-approved',
                                     default => 'dr-badge-empty',
+                                    },
                                 };
                             @endphp
 
@@ -358,7 +359,7 @@
                                         <span class="dr-month">{{ $day->translatedFormat('M') }}</span>
                                     </div>
 
-                                    <span class="dr-badge {{ $badgeClass }}">{{ $statusLabel($review?->status) }}</span>
+                                    <span class="dr-badge {{ $badgeClass }}">{{ $statusLabel($review) }}</span>
                                 </div>
 
                                 @if ($review)
