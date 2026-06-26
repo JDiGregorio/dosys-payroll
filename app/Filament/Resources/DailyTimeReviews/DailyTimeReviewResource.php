@@ -70,7 +70,7 @@ class DailyTimeReviewResource extends Resource
         $user = auth()->user();
 
         return $user?->isRrhh()
-            || ($user?->isSupervisor() && $record->employee?->supervisor_user_id === $user->id && $record->payrollPeriod?->status !== 'cerrado');
+            || ($user?->isSupervisor() && $record->employee?->supervisor_user_id === $user->id);
     }
 
     public static function canDelete(Model $record): bool
@@ -115,6 +115,7 @@ class DailyTimeReviewResource extends Resource
                                 ->label('Tiempo justificado')
                                 ->helperText('Formato HH:MM. Se suma al tiempo de Hubstaff hasta completar el total requerido.')
                                 ->placeholder('00:00')
+                                ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
                                 ->rules(['regex:/^\d{1,3}:[0-5]\d$/'])
                                 ->validationMessages(['regex' => 'Ingresa el tiempo con formato HH:MM, por ejemplo 1:05.'])
                                 ->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))
@@ -122,13 +123,14 @@ class DailyTimeReviewResource extends Resource
                             Toggle::make('assigned_overtime_fulfilled')
                                 ->label('Cumplió la hora extra asignada')
                                 ->helperText('Actívalo cuando el supervisor confirma que la hora extra se cumplió; cualquier faltante no justificado se descontará como tiempo normal. Si queda inactivo, se paga proporcionalmente el tiempo extra trabajado o justificado después de completar las horas normales.')
+                                ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
                                 ->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record)
                                     && ((float) $record?->employee?->preassigned_overtime_weekly_hours > 0
                                         || (float) $record?->employee?->overtime_hours > 0)),
-                            Toggle::make('paid_day_off')->label('Día libre (OFF)')->helperText('Marca este día cuando no hubo registro porque era día libre y debe pagarse completo.')->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record)),
-                            Toggle::make('absence_justified')->label('Ausencia justificada')->helperText('Marca si no hubo registro, pero el día debe pagarse por permiso o constancia.')->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record))->afterStateHydrated(fn (Toggle $component, ?DailyTimeReview $record) => $component->state($record ? self::isFullyJustifiedAbsence($record) : false)),
-                            Textarea::make('supervisor_comment')->label('Comentario supervisor')->columnSpanFull(),
-                            Textarea::make('rrhh_comment')->label('Comentario RRHH')->visible(fn () => auth()->user()?->isRrhh())->columnSpanFull(),
+                            Toggle::make('paid_day_off')->label('Día libre (OFF)')->helperText('Marca este día cuando no hubo registro porque era día libre y debe pagarse completo.')->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record)),
+                            Toggle::make('absence_justified')->label('Ausencia justificada')->helperText('Marca si no hubo registro, pero el día debe pagarse por permiso o constancia.')->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record))->afterStateHydrated(fn (Toggle $component, ?DailyTimeReview $record) => $component->state($record ? self::isFullyJustifiedAbsence($record) : false)),
+                            Textarea::make('supervisor_comment')->label('Comentario supervisor')->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->columnSpanFull(),
+                            Textarea::make('rrhh_comment')->label('Comentario RRHH')->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->visible(fn () => auth()->user()?->isRrhh())->columnSpanFull(),
                         ]),
                     Tab::make('Registros de Hubstaff')
                         ->columns(1)
@@ -170,13 +172,14 @@ class DailyTimeReviewResource extends Resource
             ])
             ->recordActions([
                 EditAction::make()
-                    ->label('Editar revisión')
+                    ->label(fn (DailyTimeReview $record): string => self::isClosedPeriod($record) ? 'Ver revisión' : 'Editar revisión')
                     ->mutateRecordDataUsing(fn (array $data, DailyTimeReview $record): array => $data + self::hourStates($record))
                     ->mutateFormDataUsing(fn (array $data, DailyTimeReview $record): array => self::secondsFromHourStates($data, $record))
                     ->after(fn (DailyTimeReview $record, PayrollCalculationService $service) => self::recalculateReviewAndPayroll($record, $service)),
                 Action::make('reviewed')
                     ->label('Marcar aplicado')
                     ->icon('heroicon-o-check')
+                    ->visible(fn (DailyTimeReview $record): bool => ! self::isClosedPeriod($record))
                     ->action(function (DailyTimeReview $record, PayrollCalculationService $service): void {
                         $record->update(['status' => 'revisado_supervisor', 'reviewed_by' => auth()->id()]);
                         self::recalculateReviewAndPayroll($record, $service);
@@ -184,7 +187,7 @@ class DailyTimeReviewResource extends Resource
                 Action::make('paidDayOff')
                     ->label('Marcar off pagado')
                     ->icon('heroicon-o-calendar-days')
-                    ->visible(fn (DailyTimeReview $record) => ! $record->paid_day_off)
+                    ->visible(fn (DailyTimeReview $record) => ! $record->paid_day_off && ! self::isClosedPeriod($record))
                     ->action(function (DailyTimeReview $record, PayrollCalculationService $service): void {
                         $record->update([
                             'paid_day_off' => true,
@@ -196,6 +199,7 @@ class DailyTimeReviewResource extends Resource
                 Action::make('recalculate')
                     ->label('Actualizar cálculo')
                     ->icon('heroicon-o-arrow-path')
+                    ->visible(fn (DailyTimeReview $record): bool => ! self::isClosedPeriod($record))
                     ->action(fn (DailyTimeReview $record, PayrollCalculationService $service) => self::recalculateReviewAndPayroll($record, $service)),
             ]);
     }
@@ -220,6 +224,12 @@ class DailyTimeReviewResource extends Resource
 
     public static function secondsFromHourStates(array $data, DailyTimeReview $record): array
     {
+        if (self::isClosedPeriod($record)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'payroll_period_id' => 'No se puede modificar una revisión diaria de un período cerrado.',
+            ]);
+        }
+
         $parser = app(TimeParserService::class);
 
         if (self::hasHubstaffTime($record)) {
@@ -297,6 +307,11 @@ class DailyTimeReviewResource extends Resource
             && $record->status === 'pendiente'
             && (int) $record->hubstaff_total_seconds > 0
             && (int) $record->difference_seconds >= 0;
+    }
+
+    public static function isClosedPeriod(?DailyTimeReview $record): bool
+    {
+        return $record?->payrollPeriod?->status === 'cerrado';
     }
 
     private static function recalculateReviewAndPayroll(DailyTimeReview $record, PayrollCalculationService $service): void

@@ -17,6 +17,17 @@ class EditDailyTimeReview extends EditRecord
         return [];
     }
 
+    protected function getFormActions(): array
+    {
+        if (DailyTimeReviewResource::isClosedPeriod($this->record)) {
+            return [
+                $this->getCancelFormAction()->label('Volver'),
+            ];
+        }
+
+        return parent::getFormActions();
+    }
+
     protected function mutateFormDataBeforeFill(array $data): array
     {
         return $data + DailyTimeReviewResource::hourStates($this->record);

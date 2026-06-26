@@ -7,6 +7,7 @@ use App\Services\PayrollCalculationService;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
+use Illuminate\Validation\ValidationException;
 
 class EditPayrollResult extends EditRecord
 {
@@ -20,6 +21,7 @@ class EditPayrollResult extends EditRecord
             Action::make('recalculateEmployee')
                 ->label('Recalcular empleado')
                 ->icon('heroicon-o-arrow-path')
+                ->visible(fn (): bool => $this->record->payrollPeriod?->status !== 'cerrado')
                 ->requiresConfirmation()
                 ->modalDescription('Se actualizarán únicamente los cálculos derivados del empleado, preservando justificaciones, comentarios y aprobaciones.')
                 ->action(function (PayrollCalculationService $service): void {
@@ -31,5 +33,16 @@ class EditPayrollResult extends EditRecord
                     Notification::make()->title('Cálculos del empleado actualizados')->success()->send();
                 }),
         ];
+    }
+
+    protected function mutateFormDataBeforeSave(array $data): array
+    {
+        if ($this->record->payrollPeriod?->status === 'cerrado') {
+            throw ValidationException::withMessages([
+                'payroll_period_id' => 'No se puede modificar una planilla calculada de un período cerrado.',
+            ]);
+        }
+
+        return $data;
     }
 }

@@ -6,6 +6,7 @@ use App\Filament\Pages\DailyReviewCalendar;
 use App\Filament\Pages\ImportAlerts;
 use App\Filament\Resources\Campaigns\CampaignResource;
 use App\Filament\Resources\DailyTimeReviews\DailyTimeReviewResource;
+use App\Filament\Resources\DailyTimeReviews\Pages\EditDailyTimeReview;
 use App\Filament\Resources\EmployeeAdditionalDeductions\EmployeeAdditionalDeductionResource;
 use App\Filament\Resources\Employees\EmployeeResource;
 use App\Filament\Resources\Employees\Pages\EditEmployee;
@@ -15,6 +16,7 @@ use App\Filament\Resources\PayrollDeductions\PayrollDeductionResource;
 use App\Filament\Resources\PayrollOvertimeAdjustments\PayrollOvertimeAdjustmentResource;
 use App\Filament\Resources\PayrollPeriods\Pages\ListPayrollPeriods;
 use App\Filament\Resources\PayrollPeriods\PayrollPeriodResource;
+use App\Filament\Resources\PayrollResults\Pages\ListPayrollResults;
 use App\Models\Campaign;
 use App\Models\ContractType;
 use App\Models\DailyTimeReview;
@@ -793,6 +795,62 @@ class FilamentPagesTest extends TestCase
             ->assertSee('Empleado resultado cerrado');
     }
 
+    public function test_payroll_results_index_defaults_to_open_period_when_available(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Default Open Result',
+            'email' => 'rrhh-default-open-result@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        PayrollPeriod::query()->create([
+            'name' => 'Planilla cerrada antigua',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+            'status' => 'cerrado',
+        ]);
+        $openPeriod = PayrollPeriod::query()->create([
+            'name' => 'Planilla abierta actual',
+            'starts_at' => '2026-06-16',
+            'ends_at' => '2026-06-30',
+            'status' => 'en_revision',
+        ]);
+
+        $this->actingAs($user);
+
+        Livewire::test(ListPayrollResults::class)
+            ->assertSet('tableFilters.payroll_period_id.value', (string) $openPeriod->id);
+    }
+
+    public function test_payroll_results_index_defaults_to_latest_period_when_no_open_period_exists(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Default Closed Result',
+            'email' => 'rrhh-default-closed-result@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        PayrollPeriod::query()->create([
+            'name' => 'Planilla cerrada antigua',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+            'status' => 'cerrado',
+        ]);
+        $latestPeriod = PayrollPeriod::query()->create([
+            'name' => 'Planilla cerrada reciente',
+            'starts_at' => '2026-06-16',
+            'ends_at' => '2026-06-30',
+            'status' => 'cerrado',
+        ]);
+
+        $this->actingAs($user);
+
+        Livewire::test(ListPayrollResults::class)
+            ->assertSet('tableFilters.payroll_period_id.value', (string) $latestPeriod->id);
+    }
+
     public function test_daily_review_edit_shows_hubstaff_detail_tab(): void
     {
         $user = User::query()->create([
@@ -835,6 +893,76 @@ class FilamentPagesTest extends TestCase
             ->assertSee('Registros de Hubstaff')
             ->assertSee('Operations Detail')
             ->assertSee('7:30:00');
+    }
+
+    public function test_closed_period_daily_review_is_read_only(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Closed Review',
+            'email' => 'rrhh-closed-review@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Revisión cerrada',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+            'status' => 'cerrado',
+        ]);
+        $employee = Employee::query()->create(['name' => 'Empleado Review Cerrada', 'active' => true]);
+        $review = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-06-03',
+            'expected_seconds' => 28800,
+            'hubstaff_total_seconds' => 27000,
+            'payable_seconds' => 27000,
+            'supervisor_comment' => 'Comentario original',
+        ]);
+
+        $this->actingAs($user);
+
+        $this->get("/admin/daily-time-reviews/{$review->id}/edit")
+            ->assertOk()
+            ->assertSee('Revisión y justificación')
+            ->assertDontSee('Guardar cambios');
+
+        Livewire::test(EditDailyTimeReview::class, ['record' => $review->getRouteKey()])
+            ->set('data.supervisor_comment', 'Comentario modificado')
+            ->call('save')
+            ->assertHasErrors(['payroll_period_id']);
+
+        $this->assertSame('Comentario original', $review->fresh()->supervisor_comment);
+    }
+
+    public function test_closed_period_payroll_result_cannot_be_edited(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Closed Result',
+            'email' => 'rrhh-closed-result@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Planilla cerrada',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+            'status' => 'cerrado',
+        ]);
+        $employee = Employee::query()->create(['name' => 'Empleado Planilla Cerrada', 'active' => true]);
+        $result = PayrollResult::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'net_amount' => 1000,
+        ]);
+
+        $this->actingAs($user);
+
+        $this->assertFalse(\App\Filament\Resources\PayrollResults\PayrollResultResource::canEdit($result));
+        $this->get("/admin/payroll-results/{$result->id}")->assertOk();
+        $this->get("/admin/payroll-results/{$result->id}/edit")->assertForbidden();
     }
 
     public function test_pending_daily_review_with_zero_or_positive_difference_is_displayed_as_correct(): void

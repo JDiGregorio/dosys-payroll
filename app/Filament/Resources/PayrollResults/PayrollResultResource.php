@@ -65,7 +65,8 @@ class PayrollResultResource extends Resource
 
     public static function canEdit(Model $record): bool
     {
-        return auth()->user()?->isRrhh() ?? false;
+        return (auth()->user()?->isRrhh() ?? false)
+            && $record->payrollPeriod?->status !== 'cerrado';
     }
 
     public static function canView(Model $record): bool
