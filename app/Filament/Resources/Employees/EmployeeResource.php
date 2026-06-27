@@ -155,7 +155,7 @@ class EmployeeResource extends Resource
                     ->whereIn('profile', ['supervisor', 'rrhh'])
                     ->where(fn ($query) => $query
                         ->where('active', true)
-                        ->when($record?->supervisor_user_id, fn ($query, int $supervisorId) => $query->orWhereKey($supervisorId)))
+                        ->when($record?->supervisor_user_id, fn ($query, int $supervisorId) => $query->orWhere('id', $supervisorId)))
                     ->orderBy('name')
                     ->pluck('name', 'id')
                     ->all())
