@@ -151,7 +151,14 @@ class EmployeeResource extends Resource
             Select::make('contract_type_id')->label('Tipo de contrato')->relationship('contractType', 'name')->searchable()->preload()->required(),
             Select::make('supervisor_user_id')
                 ->label('Supervisor')
-                ->options(fn () => User::query()->where('profile', 'supervisor')->where('active', true)->orderBy('name')->pluck('name', 'id')->all())
+                ->options(fn (?Employee $record) => User::query()
+                    ->whereIn('profile', ['supervisor', 'rrhh'])
+                    ->where(fn ($query) => $query
+                        ->where('active', true)
+                        ->when($record?->supervisor_user_id, fn ($query, int $supervisorId) => $query->orWhereKey($supervisorId)))
+                    ->orderBy('name')
+                    ->pluck('name', 'id')
+                    ->all())
                 ->searchable()
                 ->preload()
                 ->nullable(),

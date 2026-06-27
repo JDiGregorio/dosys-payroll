@@ -140,7 +140,7 @@ class RotatingScheduleCorrectionService
             ->whereNotIn('employee_id', $excludedEmployeeIds)
             ->get()
             ->mapWithKeys(fn (DailyTimeReview $review): array => [
-                $review->id => $review->only($this->protectedReviewFields()),
+                $review->id => $this->normalizedProtectedReviewState($review),
             ])
             ->all();
     }
@@ -177,5 +177,19 @@ class RotatingScheduleCorrectionService
             'reviewed_by',
             'approved_by',
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function normalizedProtectedReviewState(DailyTimeReview $review): array
+    {
+        $state = $review->only($this->protectedReviewFields());
+
+        if ($review->paid_day_off) {
+            $state['justified_absence_seconds'] = 0;
+        }
+
+        return $state;
     }
 }

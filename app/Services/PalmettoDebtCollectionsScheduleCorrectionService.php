@@ -232,8 +232,24 @@ class PalmettoDebtCollectionsScheduleCorrectionService
             ->orderBy('id')
             ->get()
             ->mapWithKeys(fn (DailyTimeReview $review): array => [
-                $review->id => $review->only($fields),
+                $review->id => $this->normalizedManualReviewState($review, $fields),
             ])
             ->all();
+    }
+
+    /**
+     * @param  array<int, string>  $fields
+     * @return array<string, mixed>
+     */
+    private function normalizedManualReviewState(DailyTimeReview $review, array $fields): array
+    {
+        $state = $review->only($fields);
+
+        if ($review->paid_day_off) {
+            $state['justified_absence_seconds'] = 0;
+            $state['unjustified_absence_seconds'] = 0;
+        }
+
+        return $state;
     }
 }

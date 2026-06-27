@@ -92,7 +92,9 @@ class PayrollCalculationService
         }
 
         if ($review->paid_day_off) {
-            $review->payable_seconds = (int) $review->expected_ordinary_seconds;
+            $review->justified_absence_seconds = 0;
+            $review->unjustified_absence_seconds = 0;
+            $review->payable_seconds = $this->paidDayOffSeconds($review);
         } else {
             $review->payable_seconds = $this->regularPayableSeconds($review)
                 + $this->paidAssignedOvertimeSeconds($review);
@@ -457,7 +459,11 @@ class PayrollCalculationService
 
     private function regularPayableSeconds(DailyTimeReview $review): int
     {
-        if ($review->paid_day_off || $this->isFullyJustifiedAbsence($review)) {
+        if ($review->paid_day_off) {
+            return $this->paidDayOffSeconds($review);
+        }
+
+        if ($this->isFullyJustifiedAbsence($review)) {
             return (int) $review->expected_ordinary_seconds;
         }
 
@@ -488,6 +494,34 @@ class PayrollCalculationService
             (int) $review->preassigned_overtime_seconds,
             $payableOvertimeSeconds,
         );
+    }
+
+    private function paidDayOffSeconds(DailyTimeReview $review): int
+    {
+        $expectedOrdinarySeconds = (int) $review->expected_ordinary_seconds;
+
+        if ($expectedOrdinarySeconds > 0) {
+            return $expectedOrdinarySeconds;
+        }
+
+        $employee = $review->relationLoaded('employee')
+            ? $review->employee
+            : $review->employee()->first();
+
+        if (! $employee) {
+            return 0;
+        }
+
+        if (! $review->scheduled_work_day && $this->isRotatingSchedule($employee)) {
+            return 0;
+        }
+
+        return $this->hoursToSeconds($this->fallbackDailyHours($employee));
+    }
+
+    private function hoursToSeconds(float $hours): int
+    {
+        return max((int) round($hours * 3600), 0);
     }
 
     private function creditedRequiredSeconds(DailyTimeReview $review): int
@@ -869,8 +903,24 @@ class PayrollCalculationService
             ->orderBy('id')
             ->get()
             ->mapWithKeys(fn (DailyTimeReview $review): array => [
-                $review->id => $review->only($fields),
+                $review->id => $this->normalizedManualReviewState($review, $fields),
             ])
             ->all();
+    }
+
+    /**
+     * @param  array<int, string>  $fields
+     * @return array<string, mixed>
+     */
+    private function normalizedManualReviewState(DailyTimeReview $review, array $fields): array
+    {
+        $state = $review->only($fields);
+
+        if ($review->paid_day_off) {
+            $state['justified_absence_seconds'] = 0;
+            $state['unjustified_absence_seconds'] = 0;
+        }
+
+        return $state;
     }
 }

@@ -237,7 +237,7 @@ class PayrollCalculationServiceTest extends TestCase
         $this->assertDatabaseHas('daily_time_reviews', [
             'id' => $blankReview->id,
             'paid_day_off' => true,
-            'unjustified_absence_seconds' => 28800,
+            'unjustified_absence_seconds' => 0,
             'payable_seconds' => 28800,
         ]);
         $this->assertDatabaseHas('payroll_results', [
@@ -338,12 +338,247 @@ class PayrollCalculationServiceTest extends TestCase
             'id' => $review->id,
             'paid_day_off' => true,
             'expected_ordinary_seconds' => 28800,
-            'unjustified_absence_seconds' => 25920,
+            'unjustified_absence_seconds' => 0,
             'payable_seconds' => 28800,
         ]);
         $this->assertDatabaseHas('payroll_results', [
             'employee_id' => $employee->id,
             'worked_days' => 1,
+            'worked_salary_amount' => 80,
+            'lost_time_seconds' => 0,
+        ]);
+    }
+
+    public function test_paid_day_off_for_36h_template_pays_exact_daily_scheduled_hours(): void
+    {
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Diurna',
+            'code' => 'diurna',
+            'active' => true,
+        ]);
+        $template = $this->createTemplate('Diurna 36h OFF test', 'diurna', [8, 7, 7, 7, 7]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Off 36h',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-02',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Palmetto 36h OFF',
+            'schedule_type_id' => $schedule->id,
+            'work_schedule_template_id' => $template->id,
+            'ordinary_weekly_hours' => 36,
+            'daily_hours' => 0,
+            'hourly_rate' => 59.1667,
+            'salary_calculation_method' => 'hourly_actual_hours',
+        ]);
+
+        $service = app(PayrollCalculationService::class);
+        $service->generateDailyReviews($period);
+
+        DailyTimeReview::query()
+            ->where('employee_id', $employee->id)
+            ->where('payroll_period_id', $period->id)
+            ->update([
+                'paid_day_off' => true,
+                'unjustified_absence_seconds' => 9999,
+                'status' => 'revisado_supervisor',
+            ]);
+
+        DailyTimeReview::query()
+            ->where('employee_id', $employee->id)
+            ->where('payroll_period_id', $period->id)
+            ->get()
+            ->each(fn (DailyTimeReview $review) => $service->recalculateDailyReview($review));
+        $service->recalculateEmployeePayrollResult($period, $employee);
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $employee->id,
+            'date' => '2026-06-01 00:00:00',
+            'paid_day_off' => true,
+            'expected_ordinary_seconds' => 28800,
+            'payable_seconds' => 28800,
+            'unjustified_absence_seconds' => 0,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $employee->id,
+            'date' => '2026-06-02 00:00:00',
+            'paid_day_off' => true,
+            'expected_ordinary_seconds' => 25200,
+            'payable_seconds' => 25200,
+            'unjustified_absence_seconds' => 0,
+        ]);
+        $this->assertDatabaseHas('payroll_results', [
+            'employee_id' => $employee->id,
+            'payable_seconds' => 54000,
+            'worked_salary_amount' => 887.50,
+            'lost_time_seconds' => 0,
+            'lost_time_amount' => 0,
+        ]);
+    }
+
+    public function test_paid_day_off_for_non_rotating_zero_expected_day_pays_employee_daily_hours(): void
+    {
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Diurna',
+            'code' => 'diurna',
+            'active' => true,
+        ]);
+        $template = $this->createTemplate('Diurna 36h OFF non working day test', 'diurna', [8, 7, 7, 7, 7]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Off fin de semana',
+            'starts_at' => '2026-06-06',
+            'ends_at' => '2026-06-06',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Palmetto 36h weekend OFF',
+            'schedule_type_id' => $schedule->id,
+            'work_schedule_template_id' => $template->id,
+            'ordinary_weekly_hours' => 36,
+            'daily_hours' => 7,
+            'hourly_rate' => 59.1667,
+            'salary_calculation_method' => 'hourly_actual_hours',
+        ]);
+
+        $service = app(PayrollCalculationService::class);
+        $service->generateDailyReviews($period);
+
+        $review = DailyTimeReview::query()
+            ->where('employee_id', $employee->id)
+            ->where('payroll_period_id', $period->id)
+            ->firstOrFail();
+
+        $review->update([
+            'paid_day_off' => true,
+            'status' => 'revisado_supervisor',
+        ]);
+
+        $service->recalculateDailyReview($review);
+        $service->recalculateEmployeePayrollResult($period, $employee);
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'id' => $review->id,
+            'scheduled_work_day' => false,
+            'expected_ordinary_seconds' => 0,
+            'paid_day_off' => true,
+            'payable_seconds' => 25200,
+            'unjustified_absence_seconds' => 0,
+        ]);
+        $this->assertDatabaseHas('payroll_results', [
+            'employee_id' => $employee->id,
+            'worked_days' => 1,
+            'payable_seconds' => 25200,
+            'worked_salary_amount' => 414.17,
+            'lost_time_seconds' => 0,
+        ]);
+    }
+
+    public function test_paid_day_off_for_rotating_schedule_pays_work_days_not_rest_days(): void
+    {
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Rotativa',
+            'code' => 'rotativa',
+            'active' => true,
+        ]);
+        $template = $this->createTemplate('Rotativa OFF test', 'rotativa', [11, 11, 11, 11]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Off rotativo',
+            'starts_at' => '2026-05-29',
+            'ends_at' => '2026-05-30',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Rotativo OFF',
+            'schedule_type_id' => $schedule->id,
+            'work_schedule_template_id' => $template->id,
+            'schedule_cycle_anchor_date' => '2026-05-26',
+            'rotation_work_days' => 4,
+            'rotation_rest_days' => 4,
+            'daily_hours' => 11,
+            'hourly_rate' => 60,
+            'salary_calculation_method' => 'hourly_actual_hours',
+        ]);
+
+        $service = app(PayrollCalculationService::class);
+        $service->generateDailyReviews($period);
+
+        DailyTimeReview::query()
+            ->where('employee_id', $employee->id)
+            ->where('payroll_period_id', $period->id)
+            ->update([
+                'paid_day_off' => true,
+                'unjustified_absence_seconds' => 9999,
+                'status' => 'revisado_supervisor',
+            ]);
+
+        DailyTimeReview::query()
+            ->where('employee_id', $employee->id)
+            ->where('payroll_period_id', $period->id)
+            ->get()
+            ->each(fn (DailyTimeReview $review) => $service->recalculateDailyReview($review));
+        $service->recalculateEmployeePayrollResult($period, $employee);
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $employee->id,
+            'date' => '2026-05-29 00:00:00',
+            'scheduled_work_day' => true,
+            'paid_day_off' => true,
+            'payable_seconds' => 39600,
+            'unjustified_absence_seconds' => 0,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $employee->id,
+            'date' => '2026-05-30 00:00:00',
+            'scheduled_work_day' => false,
+            'paid_day_off' => true,
+            'payable_seconds' => 0,
+            'unjustified_absence_seconds' => 0,
+        ]);
+        $this->assertDatabaseHas('payroll_results', [
+            'employee_id' => $employee->id,
+            'payable_seconds' => 39600,
+            'worked_salary_amount' => 660,
+            'lost_time_seconds' => 0,
+            'lost_time_amount' => 0,
+        ]);
+    }
+
+    public function test_recalculate_preserving_manual_allows_paid_day_off_absence_cleanup(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Off preservado',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-01',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado off preservado',
+            'daily_hours' => 8,
+            'hourly_rate' => 10,
+            'active' => true,
+        ]);
+        $review = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-06-01',
+            'expected_seconds' => 28800,
+            'expected_ordinary_seconds' => 28800,
+            'hubstaff_total_seconds' => 0,
+            'paid_day_off' => true,
+            'unjustified_absence_seconds' => 28800,
+            'status' => 'revisado_supervisor',
+            'supervisor_comment' => 'OFF autorizado',
+        ]);
+
+        app(PayrollCalculationService::class)->recalculatePeriodPreservingManual($period);
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'id' => $review->id,
+            'paid_day_off' => true,
+            'unjustified_absence_seconds' => 0,
+            'payable_seconds' => 28800,
+            'status' => 'revisado_supervisor',
+            'supervisor_comment' => 'OFF autorizado',
+        ]);
+        $this->assertDatabaseHas('payroll_results', [
+            'employee_id' => $employee->id,
             'worked_salary_amount' => 80,
             'lost_time_seconds' => 0,
         ]);
