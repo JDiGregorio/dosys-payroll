@@ -58,11 +58,13 @@ class WorkScheduleTemplateResource extends Resource
                 ->relationship()
                 ->schema([
                     TextInput::make('day_number')->label('Día del patrón')->numeric()->minValue(1)->required(),
-                    TextInput::make('expected_hours')
+                    TextInput::make('expected_seconds')
                         ->label('Horas ordinarias esperadas')
                         ->numeric()
                         ->step(0.01)
                         ->minValue(0)
+                        ->formatStateUsing(fn (mixed $state): float => round((int) $state / 3600, 2))
+                        ->dehydrateStateUsing(fn (mixed $state): int => max((int) round((float) $state * 3600), 0))
                         ->required(),
                     Toggle::make('is_working_day')->label('Día laborable')->default(true),
                     TextInput::make('notes')->label('Notas')->maxLength(255),
