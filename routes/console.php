@@ -1,9 +1,11 @@
 <?php
 
 use App\Models\PayrollPeriod;
+use App\Services\EmployeeScheduleTransitionService;
 use App\Services\PalmettoDebtCollectionsScheduleCorrectionService;
 use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
+use Carbon\Carbon;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 
@@ -47,6 +49,60 @@ Artisan::command(
         return self::SUCCESS;
     },
 )->purpose('Recalcula un período sin sobrescribir información manual.');
+
+Artisan::command(
+    'payroll:apply-employee-schedule-transition {--period= : ID del período de planilla} {--employee=Elalf Shamir Dominguez Pineda : Nombre exacto o prefijo del empleado} {--rotative-start=2026-06-11 : Primera fecha bajo jornada rotativa} {--rotative-end=2026-06-13 : Última fecha bajo jornada rotativa} {--diurnal-start=2026-06-14 : Primera fecha bajo jornada diurna} {--apply : Aplica la transición; sin esta opción solo muestra vista previa}',
+    function (EmployeeScheduleTransitionService $service): int {
+        $period = PayrollPeriod::query()->find((int) $this->option('period'));
+
+        if (! $period) {
+            $this->error('Debes indicar un período válido con --period=ID.');
+
+            return self::FAILURE;
+        }
+
+        try {
+            $row = $this->option('apply')
+                ? $service->apply(
+                    $period,
+                    (string) $this->option('employee'),
+                    Carbon::parse($this->option('rotative-start')),
+                    Carbon::parse($this->option('rotative-end')),
+                    Carbon::parse($this->option('diurnal-start')),
+                )
+                : $service->preview(
+                    $period,
+                    (string) $this->option('employee'),
+                    Carbon::parse($this->option('rotative-start')),
+                    Carbon::parse($this->option('rotative-end')),
+                    Carbon::parse($this->option('diurnal-start')),
+                );
+        } catch (Throwable $exception) {
+            $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        }
+
+        $this->table(
+            ['Período', 'Empleado', 'Rotativa desde', 'Rotativa hasta', 'Diurna desde', 'Jornada actual previa', 'Plantilla actual previa'],
+            [[
+                "{$row['period']} ({$row['period_id']})",
+                "{$row['employee']} ({$row['employee_id']})",
+                $row['rotative_start'],
+                $row['rotative_end'],
+                $row['diurnal_start'],
+                $row['current_schedule'],
+                $row['current_template'],
+            ]],
+        );
+
+        $this->info($this->option('apply')
+            ? 'Transición aplicada y período recalculado preservando información manual.'
+            : 'Vista previa únicamente. Agrega --apply para ejecutar la transición.');
+
+        return self::SUCCESS;
+    },
+)->purpose('Aplica una transición de jornada por fechas para un empleado y recalcula preservando información manual.');
 
 Artisan::command(
     'payroll:apply-period-corrections {--period= : ID del período de planilla} {--apply : Aplica las correcciones; sin esta opción solo muestra una vista previa}',

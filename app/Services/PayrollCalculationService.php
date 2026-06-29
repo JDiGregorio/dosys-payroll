@@ -130,17 +130,7 @@ class PayrollCalculationService
         $fallbackOvertimeRate = $this->employeeOvertimeRate($employee, $hourlyRate);
         $preassignedOvertimeAmount = ($preassignedOvertimeSeconds / 3600) * $fallbackOvertimeRate;
 
-        $unapprovedExcessSeconds = (int) $reviews->sum(
-            fn (DailyTimeReview $review): int => max(
-                (int) $review->hubstaff_total_seconds - (int) $review->expected_hubstaff_seconds,
-                0,
-            ),
-        );
-        [$manualOvertimeSeconds, $manualOvertimeAmount] = $this->manualOvertime(
-            $period,
-            $employee,
-            $unapprovedExcessSeconds,
-        );
+        [$manualOvertimeSeconds, $manualOvertimeAmount] = $this->manualOvertime($period, $employee);
         $overtimeAmount = round($preassignedOvertimeAmount + $manualOvertimeAmount, 2);
 
         $qaBonus = $this->bonusService->amountByType($period, $employee, ['qa']);
@@ -578,7 +568,7 @@ class PayrollCalculationService
     /**
      * @return array{0: int, 1: float}
      */
-    private function manualOvertime(PayrollPeriod $period, Employee $employee, int $availableSeconds): array
+    private function manualOvertime(PayrollPeriod $period, Employee $employee): array
     {
         $adjustments = PayrollOvertimeAdjustment::query()
             ->where('payroll_period_id', $period->id)
@@ -591,14 +581,13 @@ class PayrollCalculationService
 
         foreach ($adjustments as $adjustment) {
             $adjustmentSeconds = max((int) round((float) $adjustment->hours * 3600), 0);
-            $applicableSeconds = min($adjustmentSeconds, max($availableSeconds - $paidSeconds, 0));
 
-            if ($applicableSeconds <= 0) {
-                break;
+            if ($adjustmentSeconds <= 0) {
+                continue;
             }
 
-            $paidSeconds += $applicableSeconds;
-            $paidAmount += ($applicableSeconds / 3600) * (float) $adjustment->hourly_rate;
+            $paidSeconds += $adjustmentSeconds;
+            $paidAmount += ($adjustmentSeconds / 3600) * (float) $adjustment->hourly_rate;
         }
 
         return [$paidSeconds, $paidAmount];
@@ -724,7 +713,8 @@ class PayrollCalculationService
                 foreach ($orderedReviews as $review) {
                     $isWorkday = $review->scheduled_work_day
                         && (int) $review->hubstaff_total_seconds > 0
-                        && ! $review->paid_day_off;
+                        && ! $review->paid_day_off
+                        && $this->scheduleTypeForReview($employee, $review) !== 'rotativa';
                     $assignedSeconds = $isWorkday
                         ? min($dailyAssignedLimit, $remainingSeconds)
                         : 0;
@@ -860,6 +850,11 @@ class PayrollCalculationService
             : $employee->scheduleType()->value('code');
 
         return $scheduleCode === 'rotativa';
+    }
+
+    private function scheduleTypeForReview(Employee $employee, DailyTimeReview $review): string
+    {
+        return (string) $this->scheduleExpectationService->forDate($employee, $review->date)['schedule_type'];
     }
 
     private function preassignedWeeklySeconds(Employee $employee): int

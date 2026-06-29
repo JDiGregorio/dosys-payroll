@@ -832,8 +832,9 @@ class PayrollCalculationServiceTest extends TestCase
         $this->assertDatabaseHas('payroll_results', [
             'employee_id' => $employee->id,
             'overtime_hourly_rate' => 12.5,
-            'overtime_seconds' => 6480,
-            'overtime_amount' => 22.5,
+            'overtime_seconds' => 7200,
+            'additional_overtime_seconds' => 3600,
+            'overtime_amount' => 25,
         ]);
     }
 
@@ -1060,7 +1061,7 @@ class PayrollCalculationServiceTest extends TestCase
         ]);
     }
 
-    public function test_manual_overtime_cannot_pay_hours_without_hubstaff_excess(): void
+    public function test_manual_overtime_is_paid_when_registered_even_without_hubstaff_excess(): void
     {
         $period = PayrollPeriod::query()->create([
             'name' => 'No overtime excess',
@@ -1096,8 +1097,10 @@ class PayrollCalculationServiceTest extends TestCase
 
         $this->assertDatabaseHas('payroll_results', [
             'employee_id' => $employee->id,
-            'overtime_seconds' => 3600,
-            'overtime_amount' => 12.5,
+            'overtime_seconds' => 7200,
+            'additional_overtime_seconds' => 3600,
+            'overtime_amount' => 25,
+            'net_amount' => 105,
         ]);
     }
 
@@ -1689,6 +1692,94 @@ class PayrollCalculationServiceTest extends TestCase
             'employee_id' => $employee->id,
             'date' => '2026-05-04 00:00:00',
             'expected_ordinary_seconds' => 25200,
+        ]);
+    }
+
+    public function test_employee_schedule_transition_command_splits_rotative_and_diurnal_dates(): void
+    {
+        $diurnalSchedule = ScheduleType::query()->create([
+            'name' => 'Diurna',
+            'code' => 'diurna',
+            'active' => true,
+        ]);
+        $rotativeSchedule = ScheduleType::query()->create([
+            'name' => 'Rotativa',
+            'code' => 'rotativa',
+            'active' => true,
+        ]);
+        $diurnalTemplate = $this->createTemplate('Diurna 40h - 5 días x 8h', 'diurna', [8, 8, 8, 8, 8]);
+        $rotativeTemplate = $this->createTemplate('Rotativa 4x4', 'rotativa', [11, 11, 11, 11]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Junio 11-16',
+            'starts_at' => '2026-06-11',
+            'ends_at' => '2026-06-16',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Elalf Shamir Dominguez Pineda',
+            'schedule_type_id' => $rotativeSchedule->id,
+            'work_schedule_template_id' => $rotativeTemplate->id,
+            'schedule_cycle_anchor_date' => '2026-06-11',
+            'rotation_work_days' => 4,
+            'rotation_rest_days' => 4,
+            'weekly_hours' => 44,
+            'ordinary_weekly_hours' => 44,
+            'daily_hours' => 11,
+            'preassigned_overtime_weekly_hours' => 4,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'hourly_rate' => 10,
+        ]);
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'hubstaff_member' => $employee->name,
+            'date' => '2026-06-15',
+            'project' => 'Operations',
+            'regular_seconds' => 32400,
+            'total_seconds' => 32400,
+        ]);
+
+        $exitCode = Artisan::call('payroll:apply-employee-schedule-transition', [
+            '--period' => $period->id,
+            '--employee' => $employee->name,
+            '--rotative-start' => '2026-06-11',
+            '--rotative-end' => '2026-06-13',
+            '--diurnal-start' => '2026-06-14',
+            '--apply' => true,
+        ]);
+
+        $this->assertSame(0, $exitCode);
+        $this->assertDatabaseHas('employee_schedule_assignments', [
+            'employee_id' => $employee->id,
+            'work_schedule_template_id' => $rotativeTemplate->id,
+            'starts_at' => '2026-06-11 00:00:00',
+            'ends_at' => '2026-06-13 00:00:00',
+        ]);
+        $this->assertDatabaseHas('employee_schedule_assignments', [
+            'employee_id' => $employee->id,
+            'work_schedule_template_id' => $diurnalTemplate->id,
+            'starts_at' => '2026-06-14 00:00:00',
+            'ends_at' => null,
+        ]);
+        $this->assertDatabaseHas('employees', [
+            'id' => $employee->id,
+            'schedule_type_id' => $diurnalSchedule->id,
+            'work_schedule_template_id' => $diurnalTemplate->id,
+            'ordinary_weekly_hours' => 40,
+            'daily_hours' => 8,
+            'preassigned_overtime_weekly_hours' => 5,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $employee->id,
+            'date' => '2026-06-11 00:00:00',
+            'expected_ordinary_seconds' => 39600,
+            'preassigned_overtime_seconds' => 0,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $employee->id,
+            'date' => '2026-06-15 00:00:00',
+            'expected_ordinary_seconds' => 28800,
+            'preassigned_overtime_seconds' => 3600,
+            'expected_paid_seconds' => 32400,
         ]);
     }
 
