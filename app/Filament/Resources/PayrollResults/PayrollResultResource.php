@@ -105,7 +105,7 @@ class PayrollResultResource extends Resource
                                 ->label('Voucher')
                                 ->content(fn (?PayrollResult $record): string => $record?->voucherDeliveryStatus() ?? 'Pendiente')
                                 ->badge()
-                                ->color(fn (?PayrollResult $record): string => $record?->voucher_sent_at ? 'success' : 'gray')
+                                ->color(fn (?PayrollResult $record): string => self::voucherDeliveryColor($record))
                                 ->columnSpanFull(),
                             Select::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name')->disabled(),
                             Select::make('employee_id')->label('Empleado')->relationship('employee', 'name')->disabled(),
@@ -168,9 +168,9 @@ class PayrollResultResource extends Resource
                 TextColumn::make('voucher_sent_at')
                     ->label('Voucher')
                     ->badge()
-                    ->state(fn (PayrollResult $record): string => $record->voucher_sent_at ? 'Enviado' : 'Pendiente')
-                    ->color(fn (PayrollResult $record): string => $record->voucher_sent_at ? 'success' : 'gray')
-                    ->description(fn (PayrollResult $record): ?string => $record->voucher_sent_at
+                    ->state(fn (PayrollResult $record): string => self::voucherDeliveryLabel($record))
+                    ->color(fn (PayrollResult $record): string => self::voucherDeliveryColor($record))
+                    ->description(fn (PayrollResult $record): ?string => $record->voucher_delivery_status !== 'pending'
                         ? $record->voucherDeliveryStatus()
                         : null)
                     ->toggleable(),
@@ -264,11 +264,31 @@ class PayrollResultResource extends Resource
                 }
 
                 Notification::make()
-                    ->title('Voucher enviado')
-                    ->body('El voucher fue enviado al correo del empleado.')
+                    ->title('Voucher en cola')
+                    ->body('El voucher fue enviado a la cola. Se marcará como enviado cuando el correo salga correctamente.')
                     ->success()
                     ->send();
             });
+    }
+
+    public static function voucherDeliveryLabel(PayrollResult $record): string
+    {
+        return match ($record->voucher_delivery_status) {
+            'sent' => 'Enviado',
+            'queued' => 'En cola',
+            'failed' => 'Falló',
+            default => 'Pendiente',
+        };
+    }
+
+    public static function voucherDeliveryColor(?PayrollResult $record): string
+    {
+        return match ($record?->voucher_delivery_status) {
+            'sent' => 'success',
+            'queued' => 'warning',
+            'failed' => 'danger',
+            default => 'gray',
+        };
     }
 
     public static function previewVoucherAction(): Action

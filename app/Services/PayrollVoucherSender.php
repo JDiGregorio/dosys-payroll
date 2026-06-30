@@ -2,9 +2,8 @@
 
 namespace App\Services;
 
-use App\Mail\PayrollVoucherMail;
+use App\Jobs\SendPayrollVoucher;
 use App\Models\PayrollResult;
-use Illuminate\Support\Facades\Mail;
 use RuntimeException;
 
 class PayrollVoucherSender
@@ -23,11 +22,14 @@ class PayrollVoucherSender
             throw new RuntimeException('El empleado no tiene correo configurado.');
         }
 
-        Mail::to($email)->send(new PayrollVoucherMail($payrollResult, $comment));
-
         $payrollResult->forceFill([
-            'voucher_sent_at' => now(),
+            'voucher_delivery_status' => 'queued',
+            'voucher_queued_at' => now(),
             'voucher_sent_to' => $email,
+            'voucher_failed_at' => null,
+            'voucher_error' => null,
         ])->save();
+
+        SendPayrollVoucher::dispatch($payrollResult->id, $email, $comment);
     }
 }

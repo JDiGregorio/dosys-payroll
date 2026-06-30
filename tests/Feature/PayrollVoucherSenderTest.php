@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\SendPayrollVoucher;
 use App\Mail\PayrollVoucherMail;
 use App\Models\Employee;
 use App\Models\PayrollPeriod;
@@ -9,6 +10,7 @@ use App\Models\PayrollResult;
 use App\Services\PayrollVoucherSender;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Queue;
 use RuntimeException;
 use Tests\TestCase;
 
@@ -16,9 +18,10 @@ class PayrollVoucherSenderTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_it_sends_payroll_voucher_to_employee_email(): void
+    public function test_it_queues_payroll_voucher_to_employee_email(): void
     {
         Mail::fake();
+        Queue::fake();
 
         $period = PayrollPeriod::query()->create([
             'name' => 'Primera quincena junio 2026',
@@ -51,6 +54,48 @@ class PayrollVoucherSenderTest extends TestCase
 
         app(PayrollVoucherSender::class)->send($result, 'Comentario de prueba');
 
+        Queue::assertPushed(SendPayrollVoucher::class, function (SendPayrollVoucher $job): bool {
+            return $job->email === 'ailen@example.com'
+                && $job->comment === 'Comentario de prueba';
+        });
+        Mail::assertNothingSent();
+
+        $result->refresh();
+
+        $this->assertSame('queued', $result->voucher_delivery_status);
+        $this->assertNotNull($result->voucher_queued_at);
+        $this->assertNull($result->voucher_sent_at);
+        $this->assertSame('ailen@example.com', $result->voucher_sent_to);
+        $this->assertStringContainsString('En cola', $result->voucherDeliveryStatus());
+    }
+
+    public function test_queued_voucher_job_sends_email_and_marks_result_as_sent(): void
+    {
+        Mail::fake();
+
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Primera quincena junio 2026',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Ailen Test',
+            'email' => 'ailen@example.com',
+        ]);
+        $result = PayrollResult::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'monthly_salary' => 15000,
+            'biweekly_salary_amount' => 7500,
+            'worked_days' => 15,
+            'worked_salary_amount' => 7500,
+            'net_amount' => 7500,
+            'voucher_delivery_status' => 'queued',
+            'voucher_sent_to' => 'ailen@example.com',
+        ]);
+
+        (new SendPayrollVoucher($result->id, 'ailen@example.com', 'Comentario de prueba'))->handle();
+
         Mail::assertSent(PayrollVoucherMail::class, function (PayrollVoucherMail $mail) use ($result): bool {
             return $mail->hasTo('ailen@example.com')
                 && $mail->payrollResult->is($result)
@@ -59,6 +104,7 @@ class PayrollVoucherSenderTest extends TestCase
 
         $result->refresh();
 
+        $this->assertSame('sent', $result->voucher_delivery_status);
         $this->assertNotNull($result->voucher_sent_at);
         $this->assertSame('ailen@example.com', $result->voucher_sent_to);
         $this->assertStringContainsString('Enviado', $result->voucherDeliveryStatus());
@@ -111,6 +157,7 @@ class PayrollVoucherSenderTest extends TestCase
     public function test_it_does_not_send_voucher_to_inactive_employee(): void
     {
         Mail::fake();
+        Queue::fake();
 
         $period = PayrollPeriod::query()->create([
             'name' => 'Primera quincena junio 2026',
@@ -135,11 +182,13 @@ class PayrollVoucherSenderTest extends TestCase
         }
 
         Mail::assertNothingSent();
+        Queue::assertNothingPushed();
     }
 
     public function test_it_does_not_send_voucher_when_employee_has_no_email(): void
     {
         Mail::fake();
+        Queue::fake();
 
         $period = PayrollPeriod::query()->create([
             'name' => 'Primera quincena junio 2026',
@@ -160,5 +209,6 @@ class PayrollVoucherSenderTest extends TestCase
         }
 
         Mail::assertNothingSent();
+        Queue::assertNothingPushed();
     }
 }

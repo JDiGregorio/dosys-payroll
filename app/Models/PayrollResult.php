@@ -50,7 +50,9 @@ class PayrollResult extends Model
             'other_deductions_amount' => 'decimal:2',
             'total_deductions_amount' => 'decimal:2',
             'net_amount' => 'decimal:2',
+            'voucher_queued_at' => 'datetime',
             'voucher_sent_at' => 'datetime',
+            'voucher_failed_at' => 'datetime',
         ];
     }
 
@@ -75,16 +77,24 @@ class PayrollResult extends Model
 
     public function voucherDeliveryStatus(): string
     {
-        if (! $this->voucher_sent_at) {
-            return 'Pendiente';
+        if ($this->voucher_delivery_status === 'sent' && $this->voucher_sent_at) {
+            $sentAt = $this->voucher_sent_at->format('d/m/Y H:i');
+            $sentTo = trim((string) $this->voucher_sent_to);
+
+            return $sentTo !== ''
+                ? "Enviado {$sentAt} a {$sentTo}"
+                : "Enviado {$sentAt}";
         }
 
-        $sentAt = $this->voucher_sent_at->format('d/m/Y H:i');
-        $sentTo = trim((string) $this->voucher_sent_to);
+        if ($this->voucher_delivery_status === 'failed') {
+            return 'Falló el envío';
+        }
 
-        return $sentTo !== ''
-            ? "Enviado {$sentAt} a {$sentTo}"
-            : "Enviado {$sentAt}";
+        if ($this->voucher_delivery_status === 'queued') {
+            return 'En cola para envío';
+        }
+
+        return 'Pendiente';
     }
 
     private function displayLostDays(): float
