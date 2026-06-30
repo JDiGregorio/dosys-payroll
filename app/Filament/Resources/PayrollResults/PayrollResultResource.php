@@ -105,7 +105,11 @@ class PayrollResultResource extends Resource
                             TextInput::make('daily_rate')->label('Pago por día')->numeric(),
                             TextInput::make('hourly_rate')->label('Pago por hora')->numeric(),
                             TextInput::make('overtime_hourly_rate')->label('Valor hora extra')->numeric(),
-                            TextInput::make('worked_days')->label('Días trabajados')->numeric(),
+                            TextInput::make('display_worked_days')
+                                ->label('Días trabajados')
+                                ->disabled()
+                                ->dehydrated(false)
+                                ->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record?->displayWorkedDays() ?? 0)),
                             TextInput::make('scheduled_days')->label('Días programados')->numeric(),
                             TextInput::make('expected_hubstaff_hours')->label('Horas esperadas Hubstaff')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->expected_hubstaff_seconds) : '0:00')),
                             TextInput::make('expected_paid_hours')->label('Horas pagadas esperadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->expected_paid_seconds) : '0:00')),
@@ -153,7 +157,7 @@ class PayrollResultResource extends Resource
                 TextColumn::make('monthly_salary')->label('Salario mensual')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('biweekly_salary_amount')->label('Pago quincenal')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('daily_rate')->label('Pago por día')->money('HNL', locale: 'en-US'),
-                TextColumn::make('worked_days')->label('Días trabajados'),
+                TextColumn::make('worked_days')->label('Días trabajados')->state(fn (PayrollResult $record): float => $record->displayWorkedDays()),
                 TextColumn::make('worked_salary_amount')->label('Salario')->money('HNL', locale: 'en-US'),
                 TextColumn::make('lost_time_seconds')
                     ->label('Tiempo perdido')

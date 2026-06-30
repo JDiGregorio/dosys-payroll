@@ -48,6 +48,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
                 'employee.team',
                 'employee.workRole',
                 'employee.tierLevel',
+                'employee.scheduleType',
             ])
             ->where('payroll_period_id', $this->period->id)
             ->orderBy('employee_id');
@@ -107,7 +108,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
             $row->daily_rate,
             $row->hourly_rate,
             $row->overtime_hourly_rate,
-            $row->worked_days,
+            $row->displayWorkedDays(),
             $row->worked_salary_amount,
             $row->extra_bonuses_amount,
             $row->overtime_amount,

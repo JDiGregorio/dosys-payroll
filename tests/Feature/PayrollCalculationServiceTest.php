@@ -1712,7 +1712,7 @@ class PayrollCalculationServiceTest extends TestCase
         $period = PayrollPeriod::query()->create([
             'name' => 'Junio 11-16',
             'starts_at' => '2026-06-11',
-            'ends_at' => '2026-06-16',
+            'ends_at' => '2026-06-20',
         ]);
         $employee = Employee::query()->create([
             'name' => 'Elalf Shamir Dominguez Pineda',
@@ -1736,6 +1736,15 @@ class PayrollCalculationServiceTest extends TestCase
             'project' => 'Operations',
             'regular_seconds' => 32400,
             'total_seconds' => 32400,
+        ]);
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'hubstaff_member' => $employee->name,
+            'date' => '2026-06-20',
+            'project' => 'Operations',
+            'regular_seconds' => 28800,
+            'total_seconds' => 28800,
         ]);
 
         $exitCode = Artisan::call('payroll:apply-employee-schedule-transition', [
@@ -1780,6 +1789,16 @@ class PayrollCalculationServiceTest extends TestCase
             'expected_ordinary_seconds' => 28800,
             'preassigned_overtime_seconds' => 3600,
             'expected_paid_seconds' => 32400,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'employee_id' => $employee->id,
+            'date' => '2026-06-20 00:00:00',
+            'scheduled_work_day' => false,
+            'expected_ordinary_seconds' => 0,
+            'preassigned_overtime_seconds' => 0,
+            'hubstaff_total_seconds' => 28800,
+            'payable_seconds' => 28800,
+            'unjustified_absence_seconds' => 0,
         ]);
     }
 

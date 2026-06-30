@@ -58,4 +58,26 @@ class PayrollResult extends Model
     {
         return $this->belongsTo(Employee::class);
     }
+
+    public function displayWorkedDays(): float
+    {
+        if ($this->shouldDisplayFixedBiweeklyDays()) {
+            return 15.0;
+        }
+
+        return round((float) $this->worked_days, 2);
+    }
+
+    private function shouldDisplayFixedBiweeklyDays(): bool
+    {
+        $employee = $this->relationLoaded('employee')
+            ? $this->employee
+            : $this->employee()->with('scheduleType')->first();
+        $scheduleType = $employee?->relationLoaded('scheduleType')
+            ? $employee->scheduleType
+            : $employee?->scheduleType()->first();
+
+        return $scheduleType?->code === 'rotativa'
+            || $this->salary_calculation_method === 'semi_monthly_fixed_with_deductions';
+    }
 }

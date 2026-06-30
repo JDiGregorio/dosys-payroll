@@ -95,6 +95,10 @@ class PayrollCalculationService
             $review->justified_absence_seconds = 0;
             $review->unjustified_absence_seconds = 0;
             $review->payable_seconds = $this->paidDayOffSeconds($review);
+        } elseif ($this->isPayableUnscheduledWork($review)) {
+            $review->justified_absence_seconds = 0;
+            $review->unjustified_absence_seconds = 0;
+            $review->payable_seconds = max((int) $review->hubstaff_total_seconds, 0);
         } else {
             $review->payable_seconds = $this->regularPayableSeconds($review)
                 + $this->paidAssignedOvertimeSeconds($review);
@@ -457,6 +461,10 @@ class PayrollCalculationService
             return (int) $review->expected_ordinary_seconds;
         }
 
+        if ($this->isPayableUnscheduledWork($review)) {
+            return max((int) $review->hubstaff_total_seconds, 0);
+        }
+
         $creditedSeconds = $this->creditedRequiredSeconds($review);
 
         if (! $review->assigned_overtime_fulfilled) {
@@ -541,6 +549,10 @@ class PayrollCalculationService
             return 0;
         }
 
+        if ($this->isPayableUnscheduledWork($review)) {
+            return 0;
+        }
+
         $requiredSeconds = $review->assigned_overtime_fulfilled
             ? $this->requiredSeconds($review)
             : (int) $review->expected_ordinary_seconds;
@@ -563,6 +575,27 @@ class PayrollCalculationService
             && (int) $review->hubstaff_total_seconds <= 0
             && (int) $review->justified_absence_seconds > 0
             && (int) $review->unjustified_absence_seconds <= 0;
+    }
+
+    private function isPayableUnscheduledWork(DailyTimeReview $review): bool
+    {
+        if (
+            (int) $review->expected_ordinary_seconds > 0
+            || (int) $review->hubstaff_total_seconds <= 0
+            || $review->paid_day_off
+        ) {
+            return false;
+        }
+
+        $employee = $review->relationLoaded('employee')
+            ? $review->employee
+            : $review->employee()->first();
+
+        if (! $employee) {
+            return false;
+        }
+
+        return $this->scheduleTypeForReview($employee, $review) !== 'rotativa';
     }
 
     /**
@@ -911,7 +944,7 @@ class PayrollCalculationService
     {
         $state = $review->only($fields);
 
-        if ($review->paid_day_off) {
+        if ($review->paid_day_off || $this->isPayableUnscheduledWork($review)) {
             $state['justified_absence_seconds'] = 0;
             $state['unjustified_absence_seconds'] = 0;
         }

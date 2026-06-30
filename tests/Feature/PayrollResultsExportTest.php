@@ -10,6 +10,7 @@ use App\Models\PayrollBonus;
 use App\Models\PayrollDeduction;
 use App\Models\PayrollPeriod;
 use App\Models\PayrollResult;
+use App\Models\ScheduleType;
 use App\Models\Team;
 use App\Models\TierLevel;
 use App\Models\WorkRole;
@@ -118,5 +119,37 @@ class PayrollResultsExportTest extends TestCase
         $this->assertSame('100200300', $values[1]);
         $this->assertEquals(20, $values[16]);
         $this->assertEquals(100, $values[18]);
+    }
+
+    public function test_export_displays_rotating_payroll_days_as_full_biweekly_period_without_changing_calculation(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Jun 2026',
+            'starts_at' => '2026-06-11',
+            'ends_at' => '2026-06-25',
+        ]);
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Rotativa',
+            'code' => 'rotativa',
+            'active' => true,
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Rotativo Test',
+            'schedule_type_id' => $schedule->id,
+        ]);
+        $result = PayrollResult::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'worked_days' => 8,
+            'worked_salary_amount' => 7100,
+            'gross_amount' => 7100,
+            'net_amount' => 7100,
+        ]);
+
+        $values = (new PayrollResultsExport($period))->map($result->fresh('employee.scheduleType'));
+
+        $this->assertSame(15.0, $values[12]);
+        $this->assertSame('8.00', (string) $result->fresh()->worked_days);
     }
 }
