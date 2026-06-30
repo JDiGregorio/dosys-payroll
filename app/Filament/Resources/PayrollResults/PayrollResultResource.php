@@ -14,6 +14,7 @@ use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
+use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -49,7 +50,9 @@ class PayrollResultResource extends Resource
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
-            ->whereHas('employee', fn (Builder $query) => $query->visibleTo(auth()->user()))
+            ->whereHas('employee', fn (Builder $query) => $query
+                ->visibleTo(auth()->user())
+                ->where('employees.active', true))
             ->with(['employee.campaign', 'employee.team', 'employee.tierLevel', 'employee.scheduleType', 'payrollPeriod']);
     }
 
@@ -66,6 +69,7 @@ class PayrollResultResource extends Resource
     public static function canEdit(Model $record): bool
     {
         return (auth()->user()?->isRrhh() ?? false)
+            && (bool) $record->employee?->active
             && $record->payrollPeriod?->status !== 'cerrado';
     }
 
@@ -74,6 +78,7 @@ class PayrollResultResource extends Resource
         $user = auth()->user();
 
         return (bool) $user?->active
+            && (bool) $record->employee?->active
             && ($user->isRrhh() || $record->employee?->supervisor_user_id === $user->id);
     }
 
@@ -96,6 +101,12 @@ class PayrollResultResource extends Resource
                     Tab::make(fn (): string => auth()->user()?->isRrhh() ? 'Editar planilla' : 'Detalle de planilla')
                         ->columns(2)
                         ->schema([
+                            Placeholder::make('voucher_delivery_status')
+                                ->label('Voucher')
+                                ->content(fn (?PayrollResult $record): string => $record?->voucherDeliveryStatus() ?? 'Pendiente')
+                                ->badge()
+                                ->color(fn (?PayrollResult $record): string => $record?->voucher_sent_at ? 'success' : 'gray')
+                                ->columnSpanFull(),
                             Select::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name')->disabled(),
                             Select::make('employee_id')->label('Empleado')->relationship('employee', 'name')->disabled(),
                             TextInput::make('schedule_name')->label('Jornada')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record?->employee?->scheduleType?->name)),
@@ -129,10 +140,14 @@ class PayrollResultResource extends Resource
                             TextInput::make('additional_overtime_hours')->label('Horas extra adicionales')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToDecimalHours((int) $record->additional_overtime_seconds) : 0)),
                             TextInput::make('overtime_amount')->label('Total pago horas extras')->numeric(),
                             TextInput::make('referred_bonus_amount')->label('Bono referido')->numeric(),
-                            TextInput::make('adjustment_bonus_amount')->label('Ajuste')->numeric(),
+                            TextInput::make('tier_adjustment_bonus_amount')->label('Ajuste Cambio de Tier')->numeric(),
+                            TextInput::make('vacation_bonus_amount')->label('Vacaciones')->numeric(),
                             TextInput::make('extras_total_amount')->label('Ingresos extra totales')->numeric(),
                             TextInput::make('gross_amount')->label('Total devengado')->numeric(),
+                            TextInput::make('private_insurance_amount')->label('PAN AME Seguro')->numeric(),
                             TextInput::make('ihss_amount')->label('IHSS')->numeric(),
+                            TextInput::make('tier_adjustment_deduction_amount')->label('Ajuste Cambio de Tier')->numeric(),
+                            TextInput::make('other_deductions_amount')->label('Otras deducciones')->numeric(),
                             TextInput::make('total_deductions_amount')->label('Total deducciones')->numeric(),
                             TextInput::make('net_amount')->label('Total a pagar')->numeric(),
                             Select::make('status')->label('Estado')->options(self::statusOptions())->required(),
@@ -150,6 +165,15 @@ class PayrollResultResource extends Resource
         return $table
             ->columns([
                 TextColumn::make('employee.name')->label('Nombre empleado')->searchable()->sortable(),
+                TextColumn::make('voucher_sent_at')
+                    ->label('Voucher')
+                    ->badge()
+                    ->state(fn (PayrollResult $record): string => $record->voucher_sent_at ? 'Enviado' : 'Pendiente')
+                    ->color(fn (PayrollResult $record): string => $record->voucher_sent_at ? 'success' : 'gray')
+                    ->description(fn (PayrollResult $record): ?string => $record->voucher_sent_at
+                        ? $record->voucherDeliveryStatus()
+                        : null)
+                    ->toggleable(),
                 TextColumn::make('employee.scheduleType.name')->label('Jornada')->toggleable(),
                 TextColumn::make('salary_calculation_method')->label('Método')->formatStateUsing(fn (?string $state) => EmployeeResource::salaryCalculationMethodOptions()[$state] ?? $state)->toggleable(),
                 TextColumn::make('employee.campaign.name')->label('Campaña')->sortable(),
@@ -169,10 +193,14 @@ class PayrollResultResource extends Resource
                 TextColumn::make('additional_overtime_seconds')->label('Extra adicional')->state(fn (PayrollResult $record) => app(TimeParserService::class)->secondsToDecimalHours((int) $record->additional_overtime_seconds))->toggleable(),
                 TextColumn::make('overtime_amount')->label('Pago horas extras')->money('HNL', locale: 'en-US'),
                 TextColumn::make('referred_bonus_amount')->label('Bono referido')->money('HNL', locale: 'en-US'),
-                TextColumn::make('adjustment_bonus_amount')->label('Ajuste')->money('HNL', locale: 'en-US'),
+                TextColumn::make('tier_adjustment_bonus_amount')->label('Ajuste Cambio de Tier')->money('HNL', locale: 'en-US'),
+                TextColumn::make('vacation_bonus_amount')->label('Vacaciones')->money('HNL', locale: 'en-US')->toggleable(),
                 TextColumn::make('extras_total_amount')->label('Ingresos extra totales')->money('HNL', locale: 'en-US'),
                 TextColumn::make('gross_amount')->label('Total devengado')->money('HNL', locale: 'en-US')->sortable(),
+                TextColumn::make('private_insurance_amount')->label('PAN AME Seguro')->money('HNL', locale: 'en-US')->toggleable(),
                 TextColumn::make('ihss_amount')->label('IHSS')->money('HNL', locale: 'en-US')->toggleable(),
+                TextColumn::make('tier_adjustment_deduction_amount')->label('Ajuste Cambio de Tier deducción')->money('HNL', locale: 'en-US')->toggleable(),
+                TextColumn::make('other_deductions_amount')->label('Otras deducciones')->money('HNL', locale: 'en-US')->toggleable(),
                 TextColumn::make('total_deductions_amount')->label('Total deducciones')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('net_amount')->label('Total a pagar')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('status')->label('Estado')->badge()->formatStateUsing(fn (string $state) => self::statusOptions()[$state] ?? $state),
@@ -255,7 +283,7 @@ class PayrollResultResource extends Resource
             ->modalCancelActionLabel('Cerrar')
             ->modalWidth('5xl')
             ->modalContent(fn (PayrollResult $record) => view('emails.payroll-voucher', [
-                'result' => $record->loadMissing(['employee', 'payrollPeriod']),
+                'result' => $record->loadMissing(['employee.campaign', 'employee.team', 'employee.workRole', 'employee.tierLevel', 'payrollPeriod']),
                 'comment' => null,
                 'periodName' => $record->payrollPeriod?->name ?? 'Período de planilla',
                 'logoPath' => public_path('images/dosys-logo.jpg'),

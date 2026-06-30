@@ -19,7 +19,8 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
         'productivity' => 'Bono de Productividad',
         'time_management' => 'Bono TM',
         'referred' => 'Bono referido',
-        'adjustment' => 'Ajuste',
+        'tier_adjustment' => 'Ajuste Cambio de Tier',
+        'vacation' => 'Vacaciones',
         'internet_subsidy' => 'Subsidio por internet',
     ];
 
@@ -28,7 +29,8 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
         'productivity' => 'productivity_bonus_amount',
         'time_management' => 'time_management_bonus_amount',
         'referred' => 'referred_bonus_amount',
-        'adjustment' => 'adjustment_bonus_amount',
+        'tier_adjustment' => 'tier_adjustment_bonus_amount',
+        'vacation' => 'vacation_bonus_amount',
         'internet_subsidy' => 'internet_subsidy_amount',
     ];
 
@@ -51,6 +53,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
                 'employee.scheduleType',
             ])
             ->where('payroll_period_id', $this->period->id)
+            ->whereHas('employee', fn ($query) => $query->where('employees.active', true))
             ->orderBy('employee_id');
     }
 
@@ -86,6 +89,8 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
         }
 
         return array_merge($headings, [
+            'Ajuste Cambio de Tier',
+            'Otras deducciones',
             'Total deducciones',
             'Total a pagar',
         ]);
@@ -128,6 +133,8 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
         }
 
         return array_merge($values, [
+            $row->tier_adjustment_deduction_amount,
+            $row->other_deductions_amount,
             $row->total_deductions_amount,
             $row->net_amount,
         ]);
@@ -145,6 +152,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
             ->where('amount', '>', 0)
             ->whereNotIn('type', ['manual', 'other'])
             ->pluck('type')
+            ->map(fn (string $type): string => $type === 'adjustment' ? 'tier_adjustment' : $type)
             ->unique();
 
         if (PayrollResult::query()
@@ -170,6 +178,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
             ->where('payroll_period_id', $this->period->id)
             ->where('status', 'aprobado')
             ->where('amount', '>', 0)
+            ->whereHas('deductionType', fn ($query) => $query->where('code', '!=', 'additional'))
             ->get()
             ->pluck('deductionType')
             ->filter()

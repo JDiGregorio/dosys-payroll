@@ -56,6 +56,12 @@ class PayrollVoucherSenderTest extends TestCase
                 && $mail->payrollResult->is($result)
                 && $mail->comment === 'Comentario de prueba';
         });
+
+        $result->refresh();
+
+        $this->assertNotNull($result->voucher_sent_at);
+        $this->assertSame('ailen@example.com', $result->voucher_sent_to);
+        $this->assertStringContainsString('Enviado', $result->voucherDeliveryStatus());
     }
 
     public function test_payroll_voucher_mail_renders_period_and_amounts(): void
@@ -96,10 +102,39 @@ class PayrollVoucherSenderTest extends TestCase
         $this->assertStringContainsString('Ailen Test', $html);
         $this->assertStringContainsString('Bonificaciones', $html);
         $this->assertStringContainsString('Deducciones', $html);
-        $this->assertStringContainsString('Total bonificaciones', $html);
+        $this->assertStringContainsString('Total ingresos extra', $html);
         $this->assertStringContainsString('L 8,300.00', $html);
         $this->assertStringContainsString('Comentario institucional', $html);
-        $this->assertStringNotContainsString('Días trabajados', $html);
+        $this->assertStringContainsString('Días trabajados', $html);
+    }
+
+    public function test_it_does_not_send_voucher_to_inactive_employee(): void
+    {
+        Mail::fake();
+
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Primera quincena junio 2026',
+            'starts_at' => '2026-06-01',
+            'ends_at' => '2026-06-15',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado inactivo',
+            'email' => 'inactivo@example.com',
+            'active' => false,
+        ]);
+        $result = PayrollResult::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+        ]);
+
+        try {
+            app(PayrollVoucherSender::class)->send($result);
+            $this->fail('Se esperaba una excepción por empleado inactivo.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('El empleado está inactivo y no puede recibir voucher.', $exception->getMessage());
+        }
+
+        Mail::assertNothingSent();
     }
 
     public function test_it_does_not_send_voucher_when_employee_has_no_email(): void

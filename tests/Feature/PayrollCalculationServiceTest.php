@@ -14,6 +14,7 @@ use App\Models\PayrollBonus;
 use App\Models\PayrollDeduction;
 use App\Models\PayrollOvertimeAdjustment;
 use App\Models\PayrollPeriod;
+use App\Models\PayrollResult;
 use App\Models\ScheduleType;
 use App\Models\Team;
 use App\Models\User;
@@ -683,6 +684,105 @@ class PayrollCalculationServiceTest extends TestCase
             'employee_id' => $employee->id,
             'total_deductions_amount' => 75,
             'net_amount' => 5,
+        ]);
+    }
+
+    public function test_additional_deductions_are_classified_and_summed_with_automatic_deductions(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'May 2026',
+            'starts_at' => '2026-05-01',
+            'ends_at' => '2026-05-15',
+            'apply_deductions' => true,
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Ana Gomez',
+            'daily_hours' => 8,
+            'hourly_rate' => 10,
+            'applies_ihss' => true,
+            'applies_private_insurance' => true,
+        ]);
+        $ihss = DeductionType::query()->create([
+            'name' => 'IHSS',
+            'code' => 'ihss',
+            'calculation_type' => 'fixed',
+            'default_amount' => 5,
+        ]);
+        $privateInsurance = DeductionType::query()->create([
+            'name' => 'Pan Ame Seguro',
+            'code' => 'private_insurance',
+            'calculation_type' => 'fixed',
+            'default_amount' => 6,
+        ]);
+        $period->deductionTypes()->sync([$ihss->id, $privateInsurance->id]);
+
+        foreach ([
+            ['type' => 'ihss', 'amount' => 7, 'description' => 'IHSS adicional'],
+            ['type' => 'private_insurance', 'amount' => 9, 'description' => 'Seguro adicional'],
+            ['type' => 'adjustment', 'amount' => 11, 'description' => 'Ajuste cambio de tier'],
+            ['type' => 'other', 'amount' => 13, 'description' => 'Otra deducción'],
+        ] as $deduction) {
+            EmployeeAdditionalDeduction::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                ...$deduction,
+                'active' => true,
+            ]);
+        }
+
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-05-01',
+            'expected_seconds' => 28800,
+            'hubstaff_total_seconds' => 28800,
+            'payable_seconds' => 28800,
+        ]);
+
+        app(PayrollCalculationService::class)->recalculatePayrollResults($period);
+
+        $this->assertDatabaseHas('payroll_results', [
+            'employee_id' => $employee->id,
+            'private_insurance_amount' => 15,
+            'ihss_amount' => 12,
+            'tier_adjustment_deduction_amount' => 11,
+            'other_deductions_amount' => 13,
+            'total_deductions_amount' => 51,
+            'net_amount' => 29,
+        ]);
+    }
+
+    public function test_recalculation_removes_existing_results_for_inactive_employees(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'May 2026',
+            'starts_at' => '2026-05-01',
+            'ends_at' => '2026-05-15',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado inactivo',
+            'active' => false,
+            'daily_hours' => 8,
+            'hourly_rate' => 10,
+        ]);
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-05-01',
+            'expected_seconds' => 28800,
+            'hubstaff_total_seconds' => 28800,
+            'payable_seconds' => 28800,
+        ]);
+        PayrollResult::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'net_amount' => 80,
+        ]);
+
+        app(PayrollCalculationService::class)->recalculatePayrollResults($period);
+
+        $this->assertDatabaseMissing('payroll_results', [
+            'employee_id' => $employee->id,
         ]);
     }
 

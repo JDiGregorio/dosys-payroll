@@ -113,6 +113,15 @@ class PayrollCalculationService
 
     public function recalculateEmployeePayrollResult(PayrollPeriod $period, Employee $employee): void
     {
+        if ($employee->active === false) {
+            PayrollResult::query()
+                ->where('payroll_period_id', $period->id)
+                ->where('employee_id', $employee->id)
+                ->delete();
+
+            return;
+        }
+
         $reviews = DailyTimeReview::query()
             ->where('payroll_period_id', $period->id)
             ->where('employee_id', $employee->id)
@@ -141,12 +150,13 @@ class PayrollCalculationService
         $productivityBonus = $this->bonusService->amountByType($period, $employee, ['productivity']);
         $timeManagementBonus = $this->bonusService->amountByType($period, $employee, ['time_management']);
         $referredBonus = $this->bonusService->amountByType($period, $employee, ['referred']);
-        $adjustmentBonus = $this->bonusService->amountByType($period, $employee, ['adjustment']);
+        $tierAdjustmentBonus = $this->bonusService->amountByType($period, $employee, ['adjustment', 'tier_adjustment']);
+        $vacationBonus = $this->bonusService->amountByType($period, $employee, ['vacation']);
         $extraBonuses = $this->bonusService->amountByType($period, $employee, ['manual', 'other']);
         $internetSubsidy = ($employee->location === 'remote' ? (float) $employee->internet_subsidy_amount : 0.0)
             + $this->bonusService->amountByType($period, $employee, ['internet_subsidy']);
         $payrollCompensation = 0.0;
-        $extrasTotal = round($overtimeAmount + $internetSubsidy + $qaBonus + $productivityBonus + $timeManagementBonus + $extraBonuses + $referredBonus + $adjustmentBonus + $payrollCompensation, 2);
+        $extrasTotal = round($overtimeAmount + $internetSubsidy + $qaBonus + $productivityBonus + $timeManagementBonus + $extraBonuses + $referredBonus + $tierAdjustmentBonus + $vacationBonus + $payrollCompensation, 2);
         $workedDays = $this->workedDays($reviews);
         $scheduledDays = (float) $reviews->where('scheduled_work_day', true)->count();
         $regularLostSeconds = (int) $reviews->sum(
@@ -189,6 +199,14 @@ class PayrollCalculationService
         $isr = $deductionAmountByCode('isr');
         $rap = $deductionAmountByCode('rap');
         $vouchers = $deductionAmountByCode('vouchers');
+        $tierAdjustmentDeduction = (float) $deductions
+            ->filter(fn ($deduction): bool => $deduction->deductionType?->code === 'additional'
+                && $deduction->additional_type === 'adjustment')
+            ->sum('amount');
+        $otherDeductions = (float) $deductions
+            ->filter(fn ($deduction): bool => $deduction->deductionType?->code === 'additional'
+                && ($deduction->additional_type === 'other' || blank($deduction->additional_type)))
+            ->sum('amount');
         $totalDeductions = round((float) $deductions->sum('amount'), 2);
         $netAmount = round($grossAmount - $totalDeductions, 2);
 
@@ -230,8 +248,10 @@ class PayrollCalculationService
             'idle_deduction' => $idleDeduction,
             'extra_bonuses_amount' => round($extraBonuses, 2),
             'referred_bonus_amount' => round($referredBonus, 2),
-            'adjustment_bonus_amount' => round($adjustmentBonus, 2),
-            'bonuses_amount' => round($extraBonuses + $referredBonus + $adjustmentBonus + $qaBonus + $productivityBonus + $timeManagementBonus + $internetSubsidy, 2),
+            'adjustment_bonus_amount' => round($tierAdjustmentBonus, 2),
+            'tier_adjustment_bonus_amount' => round($tierAdjustmentBonus, 2),
+            'vacation_bonus_amount' => round($vacationBonus, 2),
+            'bonuses_amount' => round($extraBonuses + $referredBonus + $tierAdjustmentBonus + $vacationBonus + $qaBonus + $productivityBonus + $timeManagementBonus + $internetSubsidy, 2),
             'overtime_seconds' => $preassignedOvertimeSeconds + $manualOvertimeSeconds,
             'preassigned_overtime_seconds' => $preassignedOvertimeSeconds,
             'additional_overtime_seconds' => $manualOvertimeSeconds,
@@ -248,6 +268,8 @@ class PayrollCalculationService
             'isr_amount' => round($isr, 2),
             'rap_amount' => round($rap, 2),
             'vouchers_amount' => round($vouchers, 2),
+            'tier_adjustment_deduction_amount' => round($tierAdjustmentDeduction, 2),
+            'other_deductions_amount' => round($otherDeductions, 2),
             'total_deductions_amount' => $totalDeductions,
             'net_amount' => $netAmount,
             'status' => $result->exists
@@ -262,6 +284,11 @@ class PayrollCalculationService
         DB::transaction(function () use ($period): void {
             $this->generatePayrollDeductions($period);
 
+            PayrollResult::query()
+                ->where('payroll_period_id', $period->id)
+                ->whereHas('employee', fn ($query) => $query->where('employees.active', false))
+                ->delete();
+
             Employee::query()
                 ->with([
                     'scheduleType',
@@ -269,6 +296,7 @@ class PayrollCalculationService
                     'scheduleAssignments.template.days',
                     'tierLevel',
                 ])
+                ->where('employees.active', true)
                 ->whereHas('dailyTimeReviews', fn ($query) => $query
                     ->where('payroll_period_id', $period->id)
                     ->whereBetween('date', [$period->starts_at, $period->ends_at]))
@@ -284,8 +312,7 @@ class PayrollCalculationService
         DB::transaction(function () use ($period): void {
             $manualReviewState = $this->manualReviewState($period);
             $bonusState = $period->payrollBonuses()->orderBy('id')->get()->map->getAttributes()->all();
-            $deductionState = $period->payrollDeductions()->orderBy('id')->get()->map->getAttributes()->all();
-            $deductionIds = collect($deductionState)->pluck('id');
+            $deductionState = $this->protectedPayrollDeductionState($period);
             $hubstaffState = $period->hubstaffTimeEntries()->orderBy('id')->get()->map->getAttributes()->all();
 
             $this->generateDailyReviews($period);
@@ -303,13 +330,7 @@ class PayrollCalculationService
                 throw new \RuntimeException('El recálculo intentó modificar bonos existentes.');
             }
 
-            if ($deductionState !== $period->payrollDeductions()
-                ->whereKey($deductionIds)
-                ->orderBy('id')
-                ->get()
-                ->map
-                ->getAttributes()
-                ->all()) {
+            if ($deductionState !== array_intersect_key($this->protectedPayrollDeductionState($period), $deductionState)) {
                 throw new \RuntimeException('El recálculo intentó modificar deducciones existentes.');
             }
 
@@ -950,5 +971,29 @@ class PayrollCalculationService
         }
 
         return $state;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function protectedPayrollDeductionState(PayrollPeriod $period): array
+    {
+        $fields = [
+            'payroll_period_id',
+            'employee_id',
+            'amount',
+            'description',
+            'status',
+            'created_by',
+            'approved_by',
+        ];
+
+        return $period->payrollDeductions()
+            ->orderBy('id')
+            ->get()
+            ->mapWithKeys(fn ($deduction): array => [
+                $deduction->id => $deduction->only($fields),
+            ])
+            ->all();
     }
 }

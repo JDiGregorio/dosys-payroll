@@ -108,7 +108,9 @@ class PayrollBonusResource extends Resource
             }),
             Select::make('employee_id')
                 ->label('Empleado')
-                ->relationship('employee', 'name', modifyQueryUsing: fn (Builder $query) => $query->visibleTo(auth()->user()))
+                ->relationship('employee', 'name', modifyQueryUsing: fn (Builder $query) => $query
+                    ->visibleTo(auth()->user())
+                    ->where('active', true))
                 ->searchable()
                 ->preload()
                 ->visible(fn ($get) => $get('scope_type') === 'employee')
@@ -157,7 +159,8 @@ class PayrollBonusResource extends Resource
             'time_management' => 'Bono TM',
             'manual' => 'Manual',
             'referred' => 'Bono referido',
-            'adjustment' => 'Ajuste',
+            'adjustment' => 'Ajuste Cambio de Tier',
+            'vacation' => 'Vacaciones',
             'other' => 'Otro',
             'internet_subsidy' => 'Subsidio por internet',
         ];

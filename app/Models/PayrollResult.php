@@ -27,6 +27,8 @@ class PayrollResult extends Model
             'extra_bonuses_amount' => 'decimal:2',
             'referred_bonus_amount' => 'decimal:2',
             'adjustment_bonus_amount' => 'decimal:2',
+            'tier_adjustment_bonus_amount' => 'decimal:2',
+            'vacation_bonus_amount' => 'decimal:2',
             'base_salary_amount' => 'decimal:2',
             'absence_deduction' => 'decimal:2',
             'idle_deduction' => 'decimal:2',
@@ -44,8 +46,11 @@ class PayrollResult extends Model
             'isr_amount' => 'decimal:2',
             'rap_amount' => 'decimal:2',
             'vouchers_amount' => 'decimal:2',
+            'tier_adjustment_deduction_amount' => 'decimal:2',
+            'other_deductions_amount' => 'decimal:2',
             'total_deductions_amount' => 'decimal:2',
             'net_amount' => 'decimal:2',
+            'voucher_sent_at' => 'datetime',
         ];
     }
 
@@ -66,6 +71,20 @@ class PayrollResult extends Model
         }
 
         return round((float) $this->worked_days, 2);
+    }
+
+    public function voucherDeliveryStatus(): string
+    {
+        if (! $this->voucher_sent_at) {
+            return 'Pendiente';
+        }
+
+        $sentAt = $this->voucher_sent_at->format('d/m/Y H:i');
+        $sentTo = trim((string) $this->voucher_sent_to);
+
+        return $sentTo !== ''
+            ? "Enviado {$sentAt} a {$sentTo}"
+            : "Enviado {$sentAt}";
     }
 
     private function displayLostDays(): float

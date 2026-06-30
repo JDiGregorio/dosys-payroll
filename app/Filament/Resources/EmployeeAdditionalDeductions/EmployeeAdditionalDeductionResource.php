@@ -75,7 +75,8 @@ class EmployeeAdditionalDeductionResource extends Resource
     {
         return $schema->components([
             Select::make('payroll_period_id')->label('Período a cobrar')->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->open())->searchable()->preload()->required(),
-            Select::make('employee_id')->label('Empleado')->relationship('employee', 'name')->searchable()->preload()->required(),
+            Select::make('employee_id')->label('Empleado')->relationship('employee', 'name', modifyQueryUsing: fn (Builder $query) => $query->where('active', true))->searchable()->preload()->required(),
+            Select::make('type')->label('Tipo')->options(self::typeOptions())->default('other')->required(),
             TextInput::make('amount')->label('Monto')->numeric()->minValue(0.01)->default(0)->required(),
             TextInput::make('description')->label('Descripción')->maxLength(255)->required(),
             Toggle::make('active')->label('Activo')->default(true),
@@ -88,13 +89,15 @@ class EmployeeAdditionalDeductionResource extends Resource
             ->columns([
                 TextColumn::make('payrollPeriod.name')->label('Período')->sortable(),
                 TextColumn::make('employee.name')->label('Empleado')->searchable()->sortable(),
+                TextColumn::make('type')->label('Tipo')->badge()->formatStateUsing(fn (?string $state) => self::typeOptions()[$state] ?? $state),
                 TextColumn::make('amount')->label('Monto')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('description')->label('Descripción')->searchable()->limit(40),
                 IconColumn::make('active')->label('Activo')->boolean(),
             ])
             ->filters([
                 SelectFilter::make('payroll_period_id')->label('Período')->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->open()),
-                SelectFilter::make('employee_id')->label('Empleado')->relationship('employee', 'name')->searchable(),
+                SelectFilter::make('employee_id')->label('Empleado')->relationship('employee', 'name', modifyQueryUsing: fn (Builder $query) => $query->where('active', true))->searchable(),
+                SelectFilter::make('type')->label('Tipo')->options(self::typeOptions()),
             ])
             ->recordActions([
                 EditAction::make()->label('Editar'),
@@ -104,6 +107,16 @@ class EmployeeAdditionalDeductionResource extends Resource
                     DeleteBulkAction::make()->label('Eliminar'),
                 ]),
             ]);
+    }
+
+    public static function typeOptions(): array
+    {
+        return [
+            'adjustment' => 'Ajuste',
+            'ihss' => 'IHSS',
+            'private_insurance' => 'PAN AME Seguro',
+            'other' => 'Otro',
+        ];
     }
 
     public static function getPages(): array

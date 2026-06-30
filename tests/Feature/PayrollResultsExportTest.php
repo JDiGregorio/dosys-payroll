@@ -111,6 +111,8 @@ class PayrollResultsExportTest extends TestCase
             'Bono QA',
             'Total devengado',
             'IHSS',
+            'Ajuste Cambio de Tier',
+            'Otras deducciones',
             'Total deducciones',
             'Total a pagar',
         ], $headings);
