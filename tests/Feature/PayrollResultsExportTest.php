@@ -152,4 +152,38 @@ class PayrollResultsExportTest extends TestCase
         $this->assertSame(15.0, $values[12]);
         $this->assertSame('8.00', (string) $result->fresh()->worked_days);
     }
+
+    public function test_export_reflects_lost_time_in_displayed_biweekly_days(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Jun 2026',
+            'starts_at' => '2026-06-11',
+            'ends_at' => '2026-06-25',
+        ]);
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Rotativa',
+            'code' => 'rotativa',
+            'active' => true,
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Rotativo con perdida',
+            'schedule_type_id' => $schedule->id,
+        ]);
+        $result = PayrollResult::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'daily_rate' => 500,
+            'worked_days' => 8,
+            'lost_time_amount' => 250,
+            'worked_salary_amount' => 6850,
+            'gross_amount' => 6850,
+            'net_amount' => 6850,
+        ]);
+
+        $values = (new PayrollResultsExport($period))->map($result->fresh('employee.scheduleType'));
+
+        $this->assertSame(14.5, $values[12]);
+        $this->assertSame('8.00', (string) $result->fresh()->worked_days);
+    }
 }

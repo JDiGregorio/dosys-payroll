@@ -62,22 +62,50 @@ class PayrollResult extends Model
     public function displayWorkedDays(): float
     {
         if ($this->shouldDisplayFixedBiweeklyDays()) {
-            return 15.0;
+            return round(max(15.0 - $this->displayLostDays(), 0), 2);
         }
 
         return round((float) $this->worked_days, 2);
     }
 
+    private function displayLostDays(): float
+    {
+        $lostAmount = (float) $this->lost_time_amount;
+        $dailyRate = (float) $this->daily_rate;
+
+        if ($lostAmount > 0 && $dailyRate > 0) {
+            return $lostAmount / $dailyRate;
+        }
+
+        $lostSeconds = (int) $this->lost_time_seconds;
+
+        if ($lostSeconds <= 0) {
+            return 0.0;
+        }
+
+        $employee = $this->employeeForDisplay();
+        $dailyHours = (float) $employee?->daily_hours;
+
+        return $dailyHours > 0
+            ? $lostSeconds / ($dailyHours * 3600)
+            : 0.0;
+    }
+
     private function shouldDisplayFixedBiweeklyDays(): bool
     {
-        $employee = $this->relationLoaded('employee')
-            ? $this->employee
-            : $this->employee()->with('scheduleType')->first();
+        $employee = $this->employeeForDisplay();
         $scheduleType = $employee?->relationLoaded('scheduleType')
             ? $employee->scheduleType
             : $employee?->scheduleType()->first();
 
         return $scheduleType?->code === 'rotativa'
             || $this->salary_calculation_method === 'semi_monthly_fixed_with_deductions';
+    }
+
+    private function employeeForDisplay(): ?Employee
+    {
+        return $this->relationLoaded('employee')
+            ? $this->employee
+            : $this->employee()->with('scheduleType')->first();
     }
 }
