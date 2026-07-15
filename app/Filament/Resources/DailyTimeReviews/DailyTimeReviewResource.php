@@ -28,6 +28,7 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Validation\ValidationException;
 
 class DailyTimeReviewResource extends Resource
 {
@@ -225,7 +226,7 @@ class DailyTimeReviewResource extends Resource
     public static function secondsFromHourStates(array $data, DailyTimeReview $record): array
     {
         if (self::isClosedPeriod($record)) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'payroll_period_id' => 'No se puede modificar una revisión diaria de un período cerrado.',
             ]);
         }

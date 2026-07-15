@@ -1,7 +1,9 @@
 <?php
 
+use App\Models\Employee;
 use App\Models\PayrollPeriod;
 use App\Services\EmployeeScheduleTransitionService;
+use App\Services\EmployeeTrainingHoursAdjustmentService;
 use App\Services\PalmettoDebtCollectionsScheduleCorrectionService;
 use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
@@ -49,6 +51,69 @@ Artisan::command(
         return self::SUCCESS;
     },
 )->purpose('Recalcula un período sin sobrescribir información manual.');
+
+Artisan::command(
+    'payroll:apply-edwin-cruz-training-hours {--period=4 : ID del período de planilla} {--employee=63 : ID del empleado} {--apply : Aplica el ajuste; sin esta opción solo muestra vista previa}',
+    function (EmployeeTrainingHoursAdjustmentService $service): int {
+        $period = PayrollPeriod::query()->find((int) $this->option('period'));
+        $employee = Employee::query()->find((int) $this->option('employee'));
+
+        if (! $period) {
+            $this->error('Debes indicar un período válido con --period=ID.');
+
+            return self::FAILURE;
+        }
+
+        if ($period->status === 'cerrado') {
+            $this->error('El período está cerrado y no será modificado.');
+
+            return self::FAILURE;
+        }
+
+        if (! $employee) {
+            $this->error('Debes indicar un empleado válido con --employee=ID.');
+
+            return self::FAILURE;
+        }
+
+        if ((int) $employee->id !== 63) {
+            $this->error('Este comando está limitado al caso puntual de Edwin Cruz (employee_id=63).');
+
+            return self::FAILURE;
+        }
+
+        try {
+            $rows = $this->option('apply')
+                ? $service->apply($period, $employee)
+                : $service->preview($period, $employee);
+        } catch (Throwable $exception) {
+            $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        }
+
+        $this->info("Período: {$period->name} ({$period->id})");
+        $this->info("Empleado: {$employee->name} ({$employee->id})");
+        $this->table(
+            ['Fecha', 'Tipo', 'Antes pagable', 'Después pagable', 'Regular', 'Extra', 'Justificado'],
+            collect($rows)->map(fn (array $row): array => [
+                $row['date'],
+                $row['type'],
+                $row['before_payable'],
+                $row['after_payable'],
+                $row['after_regular'],
+                $row['after_overtime'],
+                $row['justified'],
+            ])->all(),
+        );
+
+        $this->info($this->option('apply')
+            ? 'Ajuste aplicado y planilla del empleado recalculada.'
+            : 'Vista previa únicamente. Agrega --apply para ejecutar el ajuste.');
+
+        return self::SUCCESS;
+    },
+)->purpose('Aplica el ajuste puntual de entrenamiento/transición rotativa de Edwin Cruz para el período 26 junio - 10 julio.');
 
 Artisan::command(
     'payroll:apply-employee-schedule-transition {--period= : ID del período de planilla} {--employee=Elalf Shamir Dominguez Pineda : Nombre exacto o prefijo del empleado} {--rotative-start=2026-06-11 : Primera fecha bajo jornada rotativa} {--rotative-end=2026-06-13 : Última fecha bajo jornada rotativa} {--diurnal-start=2026-06-14 : Primera fecha bajo jornada diurna} {--apply : Aplica la transición; sin esta opción solo muestra vista previa}',

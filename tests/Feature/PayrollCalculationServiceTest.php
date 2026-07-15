@@ -2367,6 +2367,100 @@ class PayrollCalculationServiceTest extends TestCase
         $this->assertNull($notInferred->fresh()->work_schedule_template_id);
     }
 
+    public function test_edwin_cruz_training_hours_command_recalculates_only_the_target_employee_case(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Planilla del 26 de junio al 10 de julio',
+            'starts_at' => '2026-06-26',
+            'ends_at' => '2026-07-10',
+            'status' => 'en_revision',
+        ]);
+        $schedule = ScheduleType::query()->create([
+            'name' => 'Rotativa',
+            'code' => 'rotativa',
+            'active' => true,
+        ]);
+        Employee::query()->create([
+            'id' => 63,
+            'name' => 'Edwin Cruz',
+            'schedule_type_id' => $schedule->id,
+            'daily_hours' => 11,
+            'monthly_salary' => 14200,
+            'semi_monthly_salary' => 7100,
+            'hourly_rate' => 59.1667,
+            'overtime_hourly_rate' => 73.9582,
+            'salary_calculation_method' => 'hourly_actual_hours',
+        ]);
+        $otherEmployee = Employee::query()->create([
+            'name' => 'Otro empleado',
+            'daily_hours' => 8,
+            'hourly_rate' => 10,
+            'salary_calculation_method' => 'hourly_actual_hours',
+        ]);
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $otherEmployee->id,
+            'date' => '2026-06-26',
+            'expected_seconds' => 28800,
+            'expected_ordinary_seconds' => 28800,
+            'expected_paid_seconds' => 28800,
+            'expected_hubstaff_seconds' => 28800,
+            'hubstaff_total_seconds' => 28800,
+            'payable_seconds' => 28800,
+        ]);
+
+        $exitCode = Artisan::call('payroll:apply-edwin-cruz-training-hours', [
+            '--period' => $period->id,
+            '--employee' => 63,
+            '--apply' => true,
+        ]);
+
+        $this->assertSame(0, $exitCode, Artisan::output());
+        $this->assertSame(309600, DailyTimeReview::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', 63)
+            ->sum('payable_seconds'));
+        $this->assertSame(10800, DailyTimeReview::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', 63)
+            ->sum('possible_overtime_seconds'));
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => 63,
+            'date' => '2026-07-04 00:00:00',
+            'payable_seconds' => 36000,
+            'possible_overtime_seconds' => 0,
+            'unjustified_absence_seconds' => 7200,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => 63,
+            'date' => '2026-07-05 00:00:00',
+            'payable_seconds' => 43200,
+            'justified_absence_seconds' => 6600,
+            'possible_overtime_seconds' => 3600,
+        ]);
+        $this->assertDatabaseHas('payroll_results', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => 63,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'biweekly_salary_amount' => 7100,
+            'worked_hours' => 86,
+            'payable_seconds' => 309600,
+            'regular_lost_seconds' => 3600,
+            'worked_salary_amount' => 7040.83,
+            'absence_deduction' => 59.17,
+            'overtime_seconds' => 10800,
+            'overtime_amount' => 221.87,
+            'net_amount' => 7262.7,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $otherEmployee->id,
+            'payable_seconds' => 28800,
+        ]);
+    }
+
     /**
      * @param  array<int, float|int>  $hours
      */

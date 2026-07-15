@@ -17,13 +17,14 @@ use App\Filament\Resources\PayrollOvertimeAdjustments\PayrollOvertimeAdjustmentR
 use App\Filament\Resources\PayrollPeriods\Pages\ListPayrollPeriods;
 use App\Filament\Resources\PayrollPeriods\PayrollPeriodResource;
 use App\Filament\Resources\PayrollResults\Pages\ListPayrollResults;
+use App\Filament\Resources\PayrollResults\PayrollResultResource;
 use App\Models\Campaign;
 use App\Models\ContractType;
 use App\Models\DailyTimeReview;
 use App\Models\DeductionType;
 use App\Models\Department;
-use App\Models\EmployeeAdditionalDeduction;
 use App\Models\Employee;
+use App\Models\EmployeeAdditionalDeduction;
 use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollBonus;
 use App\Models\PayrollDeduction;
@@ -960,7 +961,7 @@ class FilamentPagesTest extends TestCase
 
         $this->actingAs($user);
 
-        $this->assertFalse(\App\Filament\Resources\PayrollResults\PayrollResultResource::canEdit($result));
+        $this->assertFalse(PayrollResultResource::canEdit($result));
         $this->get("/admin/payroll-results/{$result->id}")->assertOk();
         $this->get("/admin/payroll-results/{$result->id}/edit")->assertForbidden();
     }
