@@ -287,7 +287,7 @@ class DailyTimeReviewResource extends Resource
     public static function statusOptions(): array
     {
         return [
-            'pendiente' => 'Pendiente',
+            'pendiente' => 'Sin revisión',
             'revisado_supervisor' => 'Aplicado',
             'aprobado_rrhh' => 'Aplicado',
         ];

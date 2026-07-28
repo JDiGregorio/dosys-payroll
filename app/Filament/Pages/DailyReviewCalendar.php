@@ -147,7 +147,7 @@ class DailyReviewCalendar extends Page
     public function statusLabel(?string $status): string
     {
         return match ($status) {
-            'pendiente' => 'Pendiente',
+            'pendiente' => 'Sin revisión',
             'revisado_supervisor', 'aprobado_rrhh' => 'Aplicada',
             default => 'Sin revisión',
         };

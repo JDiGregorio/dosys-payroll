@@ -2628,6 +2628,193 @@ class PayrollCalculationServiceTest extends TestCase
         ]);
     }
 
+    public function test_july_second_half_corrections_command_applies_targeted_overtime_and_edwin_reviews(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'id' => 5,
+            'name' => 'Planilla del 11 de julio al 25 de julio',
+            'starts_at' => '2026-07-11',
+            'ends_at' => '2026-07-25',
+            'status' => 'en_revision',
+        ]);
+        $priscila = Employee::query()->create([
+            'id' => 61,
+            'name' => 'Priscila Suyapa Villalta Ocampo',
+            'daily_hours' => 8,
+            'hourly_rate' => 59.1667,
+            'monthly_salary' => 14200,
+            'semi_monthly_salary' => 7100,
+        ]);
+        $dereck = Employee::query()->create([
+            'id' => 62,
+            'name' => 'Dereck David Aguilar Munguia',
+            'daily_hours' => 8,
+            'hourly_rate' => 59.1667,
+            'monthly_salary' => 14200,
+            'semi_monthly_salary' => 7100,
+        ]);
+        $edwin = Employee::query()->create([
+            'id' => 63,
+            'name' => 'Edwin Jose Cruz Larios',
+            'daily_hours' => 11,
+            'hourly_rate' => 59.1667,
+            'overtime_hourly_rate' => 73.9582,
+            'monthly_salary' => 14200,
+            'semi_monthly_salary' => 7100,
+        ]);
+
+        foreach ([$priscila, $dereck] as $employee) {
+            foreach (['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-24', '2026-07-25'] as $date) {
+                DailyTimeReview::query()->create([
+                    'payroll_period_id' => $period->id,
+                    'employee_id' => $employee->id,
+                    'date' => $date,
+                    'scheduled_work_day' => true,
+                    'expected_seconds' => 28800,
+                    'expected_ordinary_seconds' => 28800,
+                    'expected_paid_seconds' => 28800,
+                    'expected_hubstaff_seconds' => 28800,
+                    'hubstaff_total_seconds' => $date === '2026-07-20' ? 30600 : 32400,
+                    'payable_seconds' => 28800,
+                ]);
+            }
+        }
+
+        foreach (['2026-07-12', '2026-07-13', '2026-07-14', '2026-07-16'] as $date) {
+            DailyTimeReview::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $edwin->id,
+                'date' => $date,
+                'scheduled_work_day' => $date !== '2026-07-16',
+                'expected_seconds' => $date === '2026-07-16' ? 0 : 39600,
+                'expected_ordinary_seconds' => $date === '2026-07-16' ? 0 : 39600,
+                'expected_paid_seconds' => $date === '2026-07-16' ? 0 : 43200,
+                'expected_hubstaff_seconds' => $date === '2026-07-16' ? 0 : 39600,
+                'preassigned_overtime_seconds' => $date === '2026-07-16' ? 0 : 3600,
+                'hubstaff_total_seconds' => $date === '2026-07-16' ? 18778 : 0,
+                'paid_time_not_tracked_seconds' => $date === '2026-07-16' ? 0 : 3600,
+                'unjustified_absence_seconds' => $date === '2026-07-16' ? 0 : 39600,
+            ]);
+        }
+
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $edwin->id,
+            'hubstaff_member' => 'Edwin Cruz',
+            'date' => '2026-07-16',
+            'regular_seconds' => 18778,
+            'total_seconds' => 18778,
+            'active' => true,
+        ]);
+
+        $exitCode = Artisan::call('payroll:apply-july-second-half-corrections', [
+            '--period' => $period->id,
+            '--apply' => true,
+        ]);
+
+        $this->assertSame(0, $exitCode, Artisan::output());
+        $this->assertSame(18000, DailyTimeReview::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', $priscila->id)
+            ->whereDate('date', '>=', '2026-07-20')
+            ->whereDate('date', '<=', '2026-07-25')
+            ->sum('preassigned_overtime_seconds'));
+        $this->assertSame(18000, DailyTimeReview::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', $dereck->id)
+            ->whereDate('date', '>=', '2026-07-20')
+            ->whereDate('date', '<=', '2026-07-25')
+            ->sum('preassigned_overtime_seconds'));
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $priscila->id,
+            'date' => '2026-07-20 00:00:00',
+            'preassigned_overtime_seconds' => 3600,
+            'assigned_overtime_fulfilled' => false,
+            'expected_hubstaff_seconds' => 32400,
+            'expected_paid_seconds' => 32400,
+            'possible_overtime_seconds' => 1800,
+            'payable_seconds' => 30600,
+            'difference_seconds' => -1800,
+            'status' => 'pendiente',
+            'supervisor_comment' => null,
+        ]);
+        $this->assertSame('Sin revisión', DailyTimeReviewResource::displayStatusLabel(
+            DailyTimeReview::query()
+                ->where('payroll_period_id', $period->id)
+                ->where('employee_id', $priscila->id)
+                ->whereDate('date', '2026-07-20')
+                ->firstOrFail(),
+        ));
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $priscila->id,
+            'date' => '2026-07-24 00:00:00',
+            'preassigned_overtime_seconds' => 3600,
+            'assigned_overtime_fulfilled' => true,
+            'expected_hubstaff_seconds' => 32400,
+            'expected_paid_seconds' => 32400,
+            'possible_overtime_seconds' => 3600,
+            'payable_seconds' => 32400,
+            'difference_seconds' => 0,
+            'status' => 'pendiente',
+        ]);
+        $this->assertSame('Correcto', DailyTimeReviewResource::displayStatusLabel(
+            DailyTimeReview::query()
+                ->where('payroll_period_id', $period->id)
+                ->where('employee_id', $priscila->id)
+                ->whereDate('date', '2026-07-24')
+                ->firstOrFail(),
+        ));
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $edwin->id,
+            'date' => '2026-07-12 00:00:00',
+            'hubstaff_total_seconds' => 39600,
+            'payable_seconds' => 43200,
+            'unjustified_absence_seconds' => 0,
+            'status' => 'revisado_supervisor',
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $edwin->id,
+            'date' => '2026-07-16 00:00:00',
+            'scheduled_work_day' => false,
+            'paid_day_off' => true,
+            'hubstaff_total_seconds' => 0,
+            'payable_seconds' => 0,
+        ]);
+        $this->assertDatabaseHas('hubstaff_time_entries', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $edwin->id,
+            'date' => '2026-07-16 00:00:00',
+            'active' => false,
+        ]);
+        $this->assertDatabaseHas('payroll_results', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $priscila->id,
+            'preassigned_overtime_seconds' => 16200,
+            'additional_overtime_seconds' => 0,
+            'overtime_amount' => 332.81,
+        ]);
+
+        Artisan::call('payroll:apply-july-second-half-corrections', [
+            '--period' => $period->id,
+            '--apply' => true,
+        ]);
+
+        $this->assertSame(18000, DailyTimeReview::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', $priscila->id)
+            ->whereDate('date', '>=', '2026-07-20')
+            ->whereDate('date', '<=', '2026-07-25')
+            ->sum('preassigned_overtime_seconds'));
+        $this->assertSame(0, PayrollOvertimeAdjustment::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('description', 'Ajuste puntual horas extra desde 20 julio 2026.')
+            ->count());
+    }
+
     /**
      * @param  array<int, float|int>  $hours
      */

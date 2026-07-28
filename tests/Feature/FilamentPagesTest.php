@@ -1012,7 +1012,7 @@ class FilamentPagesTest extends TestCase
         $this->assertSame('Correcto', DailyTimeReviewResource::displayStatusLabel($review));
         $this->assertSame('Correcto', DailyTimeReviewResource::displayStatusLabel($positiveReview));
         $this->assertSame('pendiente', $review->fresh()->status);
-        $this->assertSame('Pendiente', DailyTimeReviewResource::displayStatusLabel($pendingReview));
+        $this->assertSame('Sin revisión', DailyTimeReviewResource::displayStatusLabel($pendingReview));
     }
 
     public function test_rrhh_can_close_period_with_pending_daily_reviews(): void
