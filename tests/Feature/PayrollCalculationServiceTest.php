@@ -2367,6 +2367,173 @@ class PayrollCalculationServiceTest extends TestCase
         $this->assertNull($notInferred->fresh()->work_schedule_template_id);
     }
 
+    public function test_fixed_salary_employee_gets_full_biweekly_salary_when_lost_time_is_fully_justified(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Quincena completa 36h',
+            'starts_at' => '2026-07-11',
+            'ends_at' => '2026-07-25',
+            'status' => 'en_revision',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Ramona test',
+            'daily_hours' => 7,
+            'monthly_salary' => 13500,
+            'semi_monthly_salary' => 6750,
+            'hourly_rate' => 62.5,
+            'salary_calculation_method' => 'hourly_actual_hours',
+        ]);
+
+        foreach ([
+            '2026-07-13' => 8,
+            '2026-07-14' => 7,
+            '2026-07-15' => 7,
+            '2026-07-16' => 7,
+            '2026-07-17' => 7,
+            '2026-07-20' => 8,
+            '2026-07-21' => 7,
+            '2026-07-22' => 7,
+            '2026-07-23' => 7,
+            '2026-07-24' => 7,
+        ] as $date => $hours) {
+            DailyTimeReview::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'date' => $date,
+                'scheduled_work_day' => true,
+                'expected_seconds' => (int) ($hours * 3600),
+                'expected_ordinary_seconds' => (int) ($hours * 3600),
+                'expected_paid_seconds' => (int) ($hours * 3600),
+                'expected_hubstaff_seconds' => (int) ($hours * 3600),
+                'hubstaff_total_seconds' => (int) ($hours * 3600),
+                'payable_seconds' => (int) ($hours * 3600),
+            ]);
+        }
+
+        foreach (['2026-07-11', '2026-07-12', '2026-07-18', '2026-07-19', '2026-07-25'] as $date) {
+            DailyTimeReview::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'date' => $date,
+                'paid_day_off' => true,
+                'payable_seconds' => 25200,
+            ]);
+        }
+
+        app(PayrollCalculationService::class)->recalculateEmployeePayrollResult($period, $employee);
+
+        $this->assertDatabaseHas('payroll_results', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'worked_hours' => 107,
+            'lost_time_seconds' => 0,
+            'lost_time_amount' => 0,
+            'worked_salary_amount' => 6750,
+            'net_amount' => 6750,
+        ]);
+    }
+
+    public function test_fixed_salary_employee_gets_fixed_biweekly_salary_for_sixteen_calendar_day_period(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Quincena del 26 al 10 con 16 dias calendario',
+            'starts_at' => '2026-07-26',
+            'ends_at' => '2026-08-10',
+            'status' => 'en_revision',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Quincena fija 16 dias test',
+            'daily_hours' => 8,
+            'monthly_salary' => 15000,
+            'semi_monthly_salary' => 7500,
+            'hourly_rate' => 62.5,
+            'salary_calculation_method' => 'hourly_actual_hours',
+        ]);
+
+        foreach ([
+            '2026-07-27',
+            '2026-07-28',
+            '2026-07-29',
+            '2026-07-30',
+            '2026-07-31',
+            '2026-08-03',
+            '2026-08-04',
+            '2026-08-05',
+            '2026-08-06',
+            '2026-08-07',
+            '2026-08-10',
+        ] as $date) {
+            DailyTimeReview::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'date' => $date,
+                'scheduled_work_day' => true,
+                'expected_seconds' => 28800,
+                'expected_ordinary_seconds' => 28800,
+                'expected_paid_seconds' => 28800,
+                'expected_hubstaff_seconds' => 28800,
+                'hubstaff_total_seconds' => 28800,
+                'payable_seconds' => 28800,
+            ]);
+        }
+
+        app(PayrollCalculationService::class)->recalculateEmployeePayrollResult($period, $employee);
+
+        $this->assertDatabaseHas('payroll_results', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'lost_time_seconds' => 0,
+            'lost_time_amount' => 0,
+            'worked_salary_amount' => 7500,
+            'net_amount' => 7500,
+        ]);
+    }
+
+    public function test_fixed_salary_employee_salary_deduction_matches_unjustified_lost_time_amount(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Quincena completa con perdida',
+            'starts_at' => '2026-07-11',
+            'ends_at' => '2026-07-25',
+            'status' => 'en_revision',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Ramona perdida test',
+            'daily_hours' => 7,
+            'monthly_salary' => 13500,
+            'semi_monthly_salary' => 6750,
+            'hourly_rate' => 62.5,
+            'salary_calculation_method' => 'hourly_actual_hours',
+        ]);
+
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-07-15',
+            'scheduled_work_day' => true,
+            'expected_seconds' => 25200,
+            'expected_ordinary_seconds' => 25200,
+            'expected_paid_seconds' => 25200,
+            'expected_hubstaff_seconds' => 25200,
+            'hubstaff_total_seconds' => 24600,
+            'payable_seconds' => 24600,
+        ]);
+
+        app(PayrollCalculationService::class)->recalculateEmployeePayrollResult($period, $employee);
+
+        $this->assertDatabaseHas('payroll_results', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'regular_lost_seconds' => 600,
+            'lost_time_amount' => 10.42,
+            'worked_salary_amount' => 6739.58,
+            'net_amount' => 6739.58,
+        ]);
+    }
+
     public function test_edwin_cruz_training_hours_command_recalculates_only_the_target_employee_case(): void
     {
         $period = PayrollPeriod::query()->create([

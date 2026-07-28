@@ -162,7 +162,7 @@ class PayrollCalculationService
         $regularLostSeconds = (int) $reviews->sum(
             fn (DailyTimeReview $review): int => $this->regularUnjustifiedSeconds($review),
         );
-        $salaryCalculationMethod = $employee->salary_calculation_method ?: 'hourly_actual_hours';
+        $salaryCalculationMethod = $this->effectiveSalaryCalculationMethod($period, $employee);
         $idleLostSeconds = $salaryCalculationMethod === 'semi_monthly_fixed_with_deductions'
             ? (int) $reviews->sum(fn (DailyTimeReview $review): int => min(
                 max((int) $review->unjustified_idle_seconds, 0),
@@ -458,6 +458,49 @@ class PayrollCalculationService
     {
         return (float) $employee->overtime_hourly_rate
             ?: $hourlyRate * 1.25;
+    }
+
+    private function effectiveSalaryCalculationMethod(PayrollPeriod $period, Employee $employee): string
+    {
+        $configuredMethod = $employee->salary_calculation_method ?: 'hourly_actual_hours';
+
+        if (
+            $configuredMethod === 'hourly_actual_hours'
+            && $this->isStandardBiweeklyPayrollPeriod($period)
+            && $this->hasConfiguredFixedSalary($employee)
+        ) {
+            return 'semi_monthly_fixed_with_deductions';
+        }
+
+        return $configuredMethod;
+    }
+
+    private function isStandardBiweeklyPayrollPeriod(PayrollPeriod $period): bool
+    {
+        if (! $period->starts_at || ! $period->ends_at) {
+            return false;
+        }
+
+        $startsAt = $period->starts_at->copy()->startOfDay();
+        $endsAt = $period->ends_at->copy()->startOfDay();
+
+        if ($endsAt->lessThan($startsAt)) {
+            return false;
+        }
+
+        $startDay = (int) $startsAt->day;
+        $endDay = (int) $endsAt->day;
+
+        return ($startDay === 11 && $endDay === 25)
+            || ($startDay === 26 && $endDay === 10);
+    }
+
+    private function hasConfiguredFixedSalary(Employee $employee): bool
+    {
+        return (float) $employee->semi_monthly_salary > 0
+            || (float) $employee->monthly_salary > 0
+            || (float) $employee->tierLevel?->semi_monthly_salary > 0
+            || (float) $employee->tierLevel?->monthly_salary > 0;
     }
 
     private function fallbackDailyHours(Employee $employee): float
