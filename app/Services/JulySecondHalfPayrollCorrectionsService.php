@@ -14,13 +14,11 @@ class JulySecondHalfPayrollCorrectionsService
 
     private const EDWIN_CRUZ_ID = 63;
 
+    private const BRENDEN_ID = 31;
+
     private const OVERTIME_DESCRIPTION = 'Ajuste puntual horas extra desde 20 julio 2026.';
 
     private const DAILY_OVERTIME_COMMENT = 'Ajuste puntual: 1h extra diaria asignada desde 20 julio 2026.';
-
-    public function __construct(
-        private readonly PayrollCalculationService $payrollCalculationService,
-    ) {}
 
     /**
      * @return array<int, array<string, mixed>>
@@ -49,7 +47,7 @@ class JulySecondHalfPayrollCorrectionsService
                 'employee' => $employee->name,
                 'action' => 'Hora extra diaria desde 20 julio',
                 'before' => $this->dailyOvertimeSummary($period, $employee),
-                'after' => '5 días x 1.00h extra diaria en revisión',
+                'after' => '5 días x 1.00h extra diaria aplicada y justificada si falta tiempo',
             ];
         }
 
@@ -74,6 +72,23 @@ class JulySecondHalfPayrollCorrectionsService
             ];
         }
 
+        $brenden = Employee::query()->find(self::BRENDEN_ID);
+        $brendenReview = $brenden
+            ? DailyTimeReview::query()
+                ->where('payroll_period_id', $period->id)
+                ->where('employee_id', $brenden->id)
+                ->whereDate('date', '2026-07-19')
+                ->first()
+            : null;
+
+        $rows[] = [
+            'employee_id' => self::BRENDEN_ID,
+            'employee' => $brenden?->name ?? 'No encontrado',
+            'action' => 'Brenden 2026-07-19',
+            'before' => $this->reviewSummary($brendenReview),
+            'after' => 'Sin revisión, Hubstaff eliminado del cálculo y no pagado',
+        ];
+
         return $rows;
     }
 
@@ -84,42 +99,84 @@ class JulySecondHalfPayrollCorrectionsService
     {
         return DB::transaction(function () use ($period): array {
             $this->ensureJulySecondHalfPeriod($period);
-            $affectedEmployeeIds = [];
 
-            foreach (self::OVERTIME_EMPLOYEE_IDS as $employeeId) {
+            foreach ($this->targetEmployeeIds() as $employeeId) {
                 $employee = Employee::query()->findOrFail($employeeId);
-                $this->removeLegacyOvertimeAdjustment($period, $employee);
-                $this->applyDailyOvertimeFromJulyTwentieth($period, $employee);
-                $affectedEmployeeIds[] = $employee->id;
+                $this->applyForEmployee($period, $employee);
+                app(PayrollCalculationService::class)->recalculateEmployeePayrollResult($period, $employee);
             }
-
-            $edwin = Employee::query()->findOrFail(self::EDWIN_CRUZ_ID);
-            $this->applyEdwinCorrections($period, $edwin);
-            $affectedEmployeeIds[] = $edwin->id;
-
-            collect($affectedEmployeeIds)
-                ->unique()
-                ->each(function (int $employeeId) use ($period): void {
-                    $employee = Employee::query()->findOrFail($employeeId);
-                    $this->payrollCalculationService->recalculateEmployeePayrollResult($period, $employee);
-                });
 
             return $this->preview($period);
         });
     }
 
+    public function applyForEmployee(PayrollPeriod $period, Employee $employee): bool
+    {
+        if (! $this->isJulySecondHalfPeriod($period)) {
+            return false;
+        }
+
+        if (in_array((int) $employee->id, self::OVERTIME_EMPLOYEE_IDS, true)) {
+            $this->removeLegacyOvertimeAdjustment($period, $employee);
+            $this->applyDailyOvertimeFromJulyTwentieth($period, $employee);
+
+            return true;
+        }
+
+        if ((int) $employee->id === self::EDWIN_CRUZ_ID) {
+            $this->applyEdwinCorrections($period, $employee);
+
+            return true;
+        }
+
+        if ((int) $employee->id === self::BRENDEN_ID) {
+            $this->applyBrendenCorrection($period, $employee);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    public function applyForPeriod(PayrollPeriod $period): void
+    {
+        if (! $this->isJulySecondHalfPeriod($period) || $period->status === 'cerrado') {
+            return;
+        }
+
+        Employee::query()
+            ->whereIn('id', $this->targetEmployeeIds())
+            ->get()
+            ->each(fn (Employee $employee): bool => $this->applyForEmployee($period, $employee));
+    }
+
     private function ensureJulySecondHalfPeriod(PayrollPeriod $period): void
     {
-        if (
-            ! $period->starts_at?->isSameDay('2026-07-11')
-            || ! $period->ends_at?->isSameDay('2026-07-25')
-        ) {
+        if (! $this->isJulySecondHalfPeriod($period)) {
             throw new \RuntimeException('Este ajuste está limitado al período 11 julio 2026 - 25 julio 2026.');
         }
 
         if ($period->status === 'cerrado') {
             throw new \RuntimeException('El período está cerrado y no será modificado.');
         }
+    }
+
+    /**
+     * @return array<int, int>
+     */
+    private function targetEmployeeIds(): array
+    {
+        return [
+            ...self::OVERTIME_EMPLOYEE_IDS,
+            self::EDWIN_CRUZ_ID,
+            self::BRENDEN_ID,
+        ];
+    }
+
+    private function isJulySecondHalfPeriod(PayrollPeriod $period): bool
+    {
+        return (bool) $period->starts_at?->isSameDay('2026-07-11')
+            && (bool) $period->ends_at?->isSameDay('2026-07-25');
     }
 
     private function removeLegacyOvertimeAdjustment(PayrollPeriod $period, Employee $employee): void
@@ -149,30 +206,32 @@ class JulySecondHalfPayrollCorrectionsService
             $overtimeSeconds = 3600;
             $expectedPaidSeconds = $ordinarySeconds + $overtimeSeconds;
             $paidNotTrackedSeconds = max((int) $review->paid_time_not_tracked_seconds, 0);
-            $creditedSeconds = min(
-                max((int) $review->hubstaff_total_seconds + $paidNotTrackedSeconds, 0),
-                $expectedPaidSeconds,
+            $justifiedSeconds = max(
+                $expectedPaidSeconds
+                    - (int) $review->hubstaff_total_seconds
+                    - $paidNotTrackedSeconds,
+                0,
             );
-            $paidOvertimeSeconds = min(
-                $overtimeSeconds,
-                max($creditedSeconds - $ordinarySeconds, 0),
-            );
-            $overtimeFulfilled = $paidOvertimeSeconds >= $overtimeSeconds;
 
             $review->fill([
                 'assigned_overtime_seconds' => $overtimeSeconds,
                 'preassigned_overtime_seconds' => $overtimeSeconds,
                 'additional_overtime_seconds' => 0,
-                'assigned_overtime_fulfilled' => $overtimeFulfilled,
+                'assigned_overtime_fulfilled' => true,
                 'expected_paid_seconds' => $expectedPaidSeconds,
                 'expected_hubstaff_seconds' => $expectedPaidSeconds,
-                'justified_absence_seconds' => 0,
+                'justified_absence_seconds' => $justifiedSeconds,
                 'unjustified_absence_seconds' => 0,
-                'possible_overtime_seconds' => $paidOvertimeSeconds,
-                'payable_seconds' => $creditedSeconds,
+                'possible_overtime_seconds' => $overtimeSeconds,
+                'payable_seconds' => $expectedPaidSeconds,
                 'difference_seconds' => (int) $review->hubstaff_total_seconds - $expectedPaidSeconds,
-                'status' => 'pendiente',
-                'supervisor_comment' => $this->removeDailyOvertimeComment($review->supervisor_comment),
+                'status' => $justifiedSeconds > 0 ? 'revisado_supervisor' : 'pendiente',
+                'supervisor_comment' => $justifiedSeconds > 0
+                    ? $this->appendComment(
+                        $this->removeDailyOvertimeComment($review->supervisor_comment),
+                        self::DAILY_OVERTIME_COMMENT,
+                    )
+                    : $this->removeDailyOvertimeComment($review->supervisor_comment),
             ]);
             $review->save();
         }
@@ -200,6 +259,61 @@ class JulySecondHalfPayrollCorrectionsService
             ->where('payroll_period_id', $period->id)
             ->where('employee_id', $employee->id)
             ->whereDate('date', '2026-07-16')
+            ->where('active', true)
+            ->update(['active' => false]);
+    }
+
+    private function applyBrendenCorrection(PayrollPeriod $period, Employee $employee): void
+    {
+        $review = DailyTimeReview::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', $employee->id)
+            ->whereDate('date', '2026-07-19')
+            ->first() ?? new DailyTimeReview([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'date' => '2026-07-19',
+            ]);
+
+        $review->fill([
+            'scheduled_work_day' => true,
+            'expected_seconds' => 28800,
+            'expected_ordinary_seconds' => 28800,
+            'assigned_overtime_seconds' => 0,
+            'preassigned_overtime_seconds' => 0,
+            'additional_overtime_seconds' => 0,
+            'assigned_overtime_fulfilled' => false,
+            'expected_paid_seconds' => 28800,
+            'expected_hubstaff_seconds' => 28800,
+            'hubstaff_total_seconds' => 0,
+            'hubstaff_regular_seconds' => 0,
+            'hubstaff_idle_seconds' => 0,
+            'activity_percentage' => null,
+            'idle_percentage' => null,
+            'pto_seconds' => 0,
+            'holiday_seconds' => 0,
+            'paid_day_off' => false,
+            'paid_break_seconds' => 0,
+            'paid_time_not_tracked_seconds' => 0,
+            'pending_idle_seconds' => 0,
+            'justified_idle_seconds' => 0,
+            'unjustified_idle_seconds' => 0,
+            'justified_absence_seconds' => 0,
+            'unjustified_absence_seconds' => 28800,
+            'possible_overtime_seconds' => 0,
+            'approved_overtime_seconds' => 0,
+            'payable_seconds' => 0,
+            'difference_seconds' => -28800,
+            'status' => 'pendiente',
+            'supervisor_comment' => null,
+        ]);
+        $review->save();
+
+        HubstaffTimeEntry::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', $employee->id)
+            ->whereDate('date', '2026-07-19')
+            ->where('active', true)
             ->update(['active' => false]);
     }
 
@@ -209,9 +323,11 @@ class JulySecondHalfPayrollCorrectionsService
     private function edwinCorrectionDates(): array
     {
         return [
+            '2026-07-11',
             '2026-07-12',
             '2026-07-13',
             '2026-07-14',
+            '2026-07-15',
             '2026-07-16',
         ];
     }
@@ -222,45 +338,54 @@ class JulySecondHalfPayrollCorrectionsService
     private function edwinReviewTarget(string $date, ?DailyTimeReview $review): array
     {
         return match ($date) {
-            '2026-07-12', '2026-07-13' => $this->edwinWorkedTwelveHoursTarget('Ajuste puntual Edwin Cruz: trabajó 12h completas por problema de Hubstaff.'),
+            '2026-07-11' => $this->offDayTarget('Ajuste puntual Edwin Cruz: 11 julio OFF.'),
+            '2026-07-12', '2026-07-13', '2026-07-15' => $this->edwinWorkedTwelveHoursTarget('Ajuste puntual Edwin Cruz: trabajó 12h completas por problema de Hubstaff.'),
             '2026-07-14' => $this->edwinJulyFourteenthTarget($review),
-            '2026-07-16' => [
-                'summary' => 'OFF, Hubstaff eliminado del cálculo',
-                'attributes' => [
-                    'scheduled_work_day' => false,
-                    'expected_seconds' => 0,
-                    'expected_ordinary_seconds' => 0,
-                    'assigned_overtime_seconds' => 0,
-                    'preassigned_overtime_seconds' => 0,
-                    'additional_overtime_seconds' => 0,
-                    'assigned_overtime_fulfilled' => false,
-                    'expected_paid_seconds' => 0,
-                    'expected_hubstaff_seconds' => 0,
-                    'hubstaff_total_seconds' => 0,
-                    'hubstaff_regular_seconds' => 0,
-                    'hubstaff_idle_seconds' => 0,
-                    'activity_percentage' => null,
-                    'idle_percentage' => null,
-                    'pto_seconds' => 0,
-                    'holiday_seconds' => 0,
-                    'paid_day_off' => true,
-                    'paid_break_seconds' => 0,
-                    'paid_time_not_tracked_seconds' => 0,
-                    'pending_idle_seconds' => 0,
-                    'justified_idle_seconds' => 0,
-                    'unjustified_idle_seconds' => 0,
-                    'justified_absence_seconds' => 0,
-                    'unjustified_absence_seconds' => 0,
-                    'possible_overtime_seconds' => 0,
-                    'approved_overtime_seconds' => 0,
-                    'payable_seconds' => 0,
-                    'difference_seconds' => 0,
-                    'status' => 'revisado_supervisor',
-                    'supervisor_comment' => 'Ajuste puntual Edwin Cruz: 16 julio OFF, tiempo Hubstaff generado por uso equivocado de PC.',
-                ],
-            ],
+            '2026-07-16' => $this->offDayTarget('Ajuste puntual Edwin Cruz: 16 julio OFF, tiempo Hubstaff generado por uso equivocado de PC.'),
             default => throw new \InvalidArgumentException("Fecha no soportada para ajuste de Edwin: {$date}."),
         };
+    }
+
+    /**
+     * @return array{summary: string, attributes: array<string, mixed>}
+     */
+    private function offDayTarget(string $comment): array
+    {
+        return [
+            'summary' => 'OFF',
+            'attributes' => [
+                'scheduled_work_day' => false,
+                'expected_seconds' => 0,
+                'expected_ordinary_seconds' => 0,
+                'assigned_overtime_seconds' => 0,
+                'preassigned_overtime_seconds' => 0,
+                'additional_overtime_seconds' => 0,
+                'assigned_overtime_fulfilled' => false,
+                'expected_paid_seconds' => 0,
+                'expected_hubstaff_seconds' => 0,
+                'hubstaff_total_seconds' => 0,
+                'hubstaff_regular_seconds' => 0,
+                'hubstaff_idle_seconds' => 0,
+                'activity_percentage' => null,
+                'idle_percentage' => null,
+                'pto_seconds' => 0,
+                'holiday_seconds' => 0,
+                'paid_day_off' => true,
+                'paid_break_seconds' => 0,
+                'paid_time_not_tracked_seconds' => 0,
+                'pending_idle_seconds' => 0,
+                'justified_idle_seconds' => 0,
+                'unjustified_idle_seconds' => 0,
+                'justified_absence_seconds' => 0,
+                'unjustified_absence_seconds' => 0,
+                'possible_overtime_seconds' => 0,
+                'approved_overtime_seconds' => 0,
+                'payable_seconds' => 0,
+                'difference_seconds' => 0,
+                'status' => 'revisado_supervisor',
+                'supervisor_comment' => $comment,
+            ],
+        ];
     }
 
     /**
@@ -405,5 +530,14 @@ class JulySecondHalfPayrollCorrectionsService
             ->implode("\n");
 
         return filled(trim($cleaned)) ? trim($cleaned) : null;
+    }
+
+    private function appendComment(?string $comment, string $line): string
+    {
+        $cleaned = $this->removeDailyOvertimeComment($comment);
+
+        return trim(collect([$cleaned, $line])
+            ->filter(fn (?string $value): bool => filled($value))
+            ->implode("\n"));
     }
 }

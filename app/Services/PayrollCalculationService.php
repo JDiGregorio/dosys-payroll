@@ -310,6 +310,8 @@ class PayrollCalculationService
     public function recalculatePeriodPreservingManual(PayrollPeriod $period): void
     {
         DB::transaction(function () use ($period): void {
+            app(JulySecondHalfPayrollCorrectionsService::class)->applyForPeriod($period);
+
             $manualReviewState = $this->manualReviewState($period);
             $bonusState = $period->payrollBonuses()->orderBy('id')->get()->map->getAttributes()->all();
             $deductionState = $this->protectedPayrollDeductionState($period);
@@ -347,6 +349,8 @@ class PayrollCalculationService
     public function recalculateEmployeePreservingManual(PayrollPeriod $period, Employee $employee): void
     {
         DB::transaction(function () use ($period, $employee): void {
+            app(JulySecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
+
             $manualReviewState = $this->manualReviewState($period, $employee);
             $entriesByEmployeeDate = HubstaffTimeEntry::query()
                 ->where('payroll_period_id', $period->id)
@@ -740,6 +744,8 @@ class PayrollCalculationService
                 $this->calculateDailyReview($review, $employee);
             }
 
+            $this->applyJulySecondHalfPayrollCorrections($period, $employee);
+
             return;
         }
 
@@ -828,6 +834,13 @@ class PayrollCalculationService
                     $this->calculateDailyReview($review, $employee);
                 }
             });
+
+        $this->applyJulySecondHalfPayrollCorrections($period, $employee);
+    }
+
+    private function applyJulySecondHalfPayrollCorrections(PayrollPeriod $period, Employee $employee): void
+    {
+        app(JulySecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
     }
 
     private function weekKey(Carbon $date): string
