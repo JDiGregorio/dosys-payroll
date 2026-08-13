@@ -1918,10 +1918,11 @@ class PayrollCalculationServiceTest extends TestCase
             'employee_id' => $employee->id,
             'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
             'scheduled_days' => 8,
-            'worked_salary_amount' => 7100,
+            'base_salary_amount' => 7573.33,
+            'worked_salary_amount' => 7573.33,
             'preassigned_overtime_seconds' => 28800,
             'overtime_amount' => 592,
-            'gross_amount' => 7692,
+            'gross_amount' => 8165.33,
             'lost_time_seconds' => 0,
         ]);
     }
@@ -2434,7 +2435,7 @@ class PayrollCalculationServiceTest extends TestCase
         ]);
     }
 
-    public function test_fixed_salary_employee_gets_fixed_biweekly_salary_for_sixteen_calendar_day_period(): void
+    public function test_fixed_salary_employee_gets_extra_day_pay_for_sixteen_calendar_day_period(): void
     {
         $period = PayrollPeriod::query()->create([
             'name' => 'Quincena del 26 al 10 con 16 dias calendario',
@@ -2486,8 +2487,9 @@ class PayrollCalculationServiceTest extends TestCase
             'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
             'lost_time_seconds' => 0,
             'lost_time_amount' => 0,
-            'worked_salary_amount' => 7500,
-            'net_amount' => 7500,
+            'base_salary_amount' => 8000,
+            'worked_salary_amount' => 8000,
+            'net_amount' => 8000,
         ]);
     }
 

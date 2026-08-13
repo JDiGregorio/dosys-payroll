@@ -159,6 +159,8 @@ class PayrollCalculationService
         $extrasTotal = round($overtimeAmount + $internetSubsidy + $qaBonus + $productivityBonus + $timeManagementBonus + $extraBonuses + $referredBonus + $tierAdjustmentBonus + $vacationBonus + $payrollCompensation, 2);
         $workedDays = $this->workedDays($reviews);
         $scheduledDays = (float) $reviews->where('scheduled_work_day', true)->count();
+        $extraCalendarDays = $this->extraStandardBiweeklyCalendarDays($period);
+        $fixedSalaryBase = $biweeklySalary + ($extraCalendarDays * $dailyRate);
         $regularLostSeconds = (int) $reviews->sum(
             fn (DailyTimeReview $review): int => $this->regularUnjustifiedSeconds($review),
         );
@@ -179,7 +181,7 @@ class PayrollCalculationService
         $expectedOrdinarySeconds = (int) $reviews->sum('expected_ordinary_seconds');
         $workedSalary = round(match ($salaryCalculationMethod) {
             'semi_monthly_fixed_with_deductions' => max(
-                $biweeklySalary - $absenceDeduction - $idleDeduction,
+                $fixedSalaryBase - $absenceDeduction - $idleDeduction,
                 0,
             ),
             'monthly_calendar_prorated' => $workedDays * $dailyRate,
@@ -243,7 +245,7 @@ class PayrollCalculationService
             'base_salary_amount' => in_array($salaryCalculationMethod, [
                 'semi_monthly_fixed_with_deductions',
                 'scheduled_shift_prorated',
-            ], true) ? round($biweeklySalary, 2) : $workedSalary,
+            ], true) ? round($fixedSalaryBase, 2) : $workedSalary,
             'absence_deduction' => $absenceDeduction,
             'idle_deduction' => $idleDeduction,
             'extra_bonuses_amount' => round($extraBonuses, 2),
@@ -497,6 +499,27 @@ class PayrollCalculationService
 
         return ($startDay === 11 && $endDay === 25)
             || ($startDay === 26 && $endDay === 10);
+    }
+
+    private function extraStandardBiweeklyCalendarDays(PayrollPeriod $period): int
+    {
+        if (! $this->isStandardBiweeklyPayrollPeriod($period)) {
+            return 0;
+        }
+
+        return max($this->calendarDaysInPeriod($period) - 15, 0);
+    }
+
+    private function calendarDaysInPeriod(PayrollPeriod $period): int
+    {
+        if (! $period->starts_at || ! $period->ends_at) {
+            return 0;
+        }
+
+        return (int) $period->starts_at
+            ->copy()
+            ->startOfDay()
+            ->diffInDays($period->ends_at->copy()->startOfDay()) + 1;
     }
 
     private function hasConfiguredFixedSalary(Employee $employee): bool

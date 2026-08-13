@@ -69,7 +69,7 @@ class PayrollResult extends Model
     public function displayWorkedDays(): float
     {
         if ($this->shouldDisplayFixedBiweeklyDays()) {
-            return round(max(15.0 - $this->displayLostDays(), 0), 2);
+            return round(max($this->displayBasePeriodDays() - $this->displayLostDays(), 0), 2);
         }
 
         return round((float) $this->worked_days, 2);
@@ -129,6 +129,34 @@ class PayrollResult extends Model
 
         return $scheduleType?->code === 'rotativa'
             || $this->salary_calculation_method === 'semi_monthly_fixed_with_deductions';
+    }
+
+    private function displayBasePeriodDays(): float
+    {
+        $period = $this->relationLoaded('payrollPeriod')
+            ? $this->payrollPeriod
+            : $this->payrollPeriod()->first();
+
+        if (! $period?->starts_at || ! $period?->ends_at) {
+            return 15.0;
+        }
+
+        $startDay = (int) $period->starts_at->day;
+        $endDay = (int) $period->ends_at->day;
+        $isStandardBiweekly = ($startDay === 11 && $endDay === 25)
+            || ($startDay === 26 && $endDay === 10);
+
+        if (! $isStandardBiweekly) {
+            return 15.0;
+        }
+
+        return max(
+            (float) ((int) $period->starts_at
+                ->copy()
+                ->startOfDay()
+                ->diffInDays($period->ends_at->copy()->startOfDay()) + 1),
+            15.0,
+        );
     }
 
     private function employeeForDisplay(): ?Employee

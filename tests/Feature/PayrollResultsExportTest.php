@@ -155,6 +155,31 @@ class PayrollResultsExportTest extends TestCase
         $this->assertSame('8.00', (string) $result->fresh()->worked_days);
     }
 
+    public function test_export_displays_sixteen_days_for_sixteen_calendar_day_fixed_payroll_period(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Jul-Aug 2026',
+            'starts_at' => '2026-07-26',
+            'ends_at' => '2026-08-10',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado 16 dias',
+        ]);
+        $result = PayrollResult::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'worked_days' => 16,
+            'worked_salary_amount' => 8000,
+            'gross_amount' => 8000,
+            'net_amount' => 8000,
+        ]);
+
+        $values = (new PayrollResultsExport($period))->map($result->fresh('employee.scheduleType'));
+
+        $this->assertSame(16.0, $values[12]);
+    }
+
     public function test_export_reflects_lost_time_in_displayed_biweekly_days(): void
     {
         $period = PayrollPeriod::query()->create([
