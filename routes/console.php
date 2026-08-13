@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\DailyTimeReview;
 use App\Models\Employee;
 use App\Models\PayrollPeriod;
 use App\Services\EmployeeScheduleTransitionService;
@@ -8,6 +9,7 @@ use App\Services\JulySecondHalfPayrollCorrectionsService;
 use App\Services\PalmettoDebtCollectionsScheduleCorrectionService;
 use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
+use App\Services\TimeParserService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -52,6 +54,170 @@ Artisan::command(
         return self::SUCCESS;
     },
 )->purpose('Recalcula un período sin sobrescribir información manual.');
+
+Artisan::command(
+    'payroll:reconcile-justified-idle {--period= : ID del período de planilla} {--employee= : ID del empleado; opcional} {--include-pending : Incluye revisiones pendientes, útil para correcciones puntuales} {--apply : Aplica el ajuste; sin esta opción solo muestra vista previa}',
+    function (PayrollCalculationService $service, TimeParserService $parser): int {
+        $period = PayrollPeriod::query()->find((int) $this->option('period'));
+
+        if (! $period) {
+            $this->error('Debes indicar un período válido con --period=ID.');
+
+            return self::FAILURE;
+        }
+
+        if ($period->status === 'cerrado') {
+            $this->error('El período está cerrado y no será modificado.');
+
+            return self::FAILURE;
+        }
+
+        $employee = null;
+        $employeeOption = $this->option('employee');
+
+        if ($employeeOption !== null && $employeeOption !== '') {
+            $employee = Employee::query()->find((int) $employeeOption);
+
+            if (! $employee) {
+                $this->error('No existe el empleado indicado con --employee=ID.');
+
+                return self::FAILURE;
+            }
+        }
+
+        $includePending = (bool) $this->option('include-pending');
+        $reviews = DailyTimeReview::query()
+            ->with('employee')
+            ->where('payroll_period_id', $period->id)
+            ->when($employee, fn ($query) => $query->where('employee_id', $employee->id))
+            ->where('hubstaff_total_seconds', '>', 0)
+            ->where(function ($query) {
+                $query
+                    ->where('unjustified_idle_seconds', '>', 0)
+                    ->orWhere('unjustified_absence_seconds', '>', 0);
+            })
+            ->orderBy('employee_id')
+            ->orderBy('date')
+            ->get()
+            ->filter(function (DailyTimeReview $review) use ($includePending): bool {
+                if (! $includePending && $review->status === 'pendiente') {
+                    return false;
+                }
+
+                $requiredSeconds = (int) $review->expected_paid_seconds
+                    ?: (int) $review->expected_seconds + (int) $review->assigned_overtime_seconds;
+                $regularLostSeconds = max(
+                    $requiredSeconds
+                        - (int) $review->hubstaff_total_seconds
+                        - (int) $review->paid_time_not_tracked_seconds,
+                    0,
+                );
+                $roundedRegularLostSeconds = (int) round($regularLostSeconds / 60) * 60;
+                $regularWillBeCovered = (int) $review->unjustified_absence_seconds <= 0
+                    || (
+                        (int) $review->justified_absence_seconds >= $roundedRegularLostSeconds
+                        && (int) $review->justified_absence_seconds < $regularLostSeconds
+                    );
+                $idleWillBeCovered = (int) $review->unjustified_idle_seconds > 0
+                    && $regularWillBeCovered;
+
+                return ($regularWillBeCovered && (int) $review->unjustified_absence_seconds > 0)
+                    || $idleWillBeCovered;
+            })
+            ->values();
+
+        $rows = $reviews->map(function (DailyTimeReview $review) use ($parser): array {
+            $requiredSeconds = (int) $review->expected_paid_seconds
+                ?: (int) $review->expected_seconds + (int) $review->assigned_overtime_seconds;
+            $regularLostSeconds = max(
+                $requiredSeconds
+                    - (int) $review->hubstaff_total_seconds
+                    - (int) $review->paid_time_not_tracked_seconds,
+                0,
+            );
+
+            return [
+                'employee_id' => $review->employee_id,
+                'employee' => $review->employee?->name,
+                'date' => $review->date->toDateString(),
+                'status' => $review->status,
+                'regular_before' => $parser->secondsToHourMinuteSecond((int) $review->unjustified_absence_seconds),
+                'regular_after' => (int) $review->unjustified_absence_seconds > 0
+                    ? '0:00:00'
+                    : $parser->secondsToHourMinuteSecond((int) $review->unjustified_absence_seconds),
+                'idle_before' => $parser->secondsToHourMinute((int) $review->unjustified_idle_seconds),
+                'idle_after' => (int) $review->unjustified_idle_seconds > 0
+                    ? '0:00'
+                    : $parser->secondsToHourMinute((int) $review->unjustified_idle_seconds),
+                'regular_lost' => $regularLostSeconds,
+            ];
+        });
+
+        $this->info("Período: {$period->name} ({$period->id})");
+        $this->table(
+            ['ID', 'Empleado', 'Fecha', 'Estado', 'Faltante antes', 'Faltante después', 'Idle antes', 'Idle después'],
+            $rows->map(fn (array $row): array => [
+                $row['employee_id'],
+                $row['employee'],
+                $row['date'],
+                $row['status'],
+                $row['regular_before'],
+                $row['regular_after'],
+                $row['idle_before'],
+                $row['idle_after'],
+            ])->all(),
+        );
+
+        if (! $this->option('apply')) {
+            $this->warn('Vista previa únicamente. Agrega --apply para ejecutar la reconciliación.');
+
+            return self::SUCCESS;
+        }
+
+        $affectedEmployees = $reviews->pluck('employee')->filter()->unique('id');
+
+        foreach ($reviews as $review) {
+            $requiredSeconds = (int) $review->expected_paid_seconds
+                ?: (int) $review->expected_seconds + (int) $review->assigned_overtime_seconds;
+            $regularLostSeconds = max(
+                $requiredSeconds
+                    - (int) $review->hubstaff_total_seconds
+                    - (int) $review->paid_time_not_tracked_seconds,
+                0,
+            );
+            $roundedRegularLostSeconds = (int) round($regularLostSeconds / 60) * 60;
+            $regularWillBeCovered = (int) $review->unjustified_absence_seconds <= 0
+                || (
+                    (int) $review->justified_absence_seconds >= $roundedRegularLostSeconds
+                    && (int) $review->justified_absence_seconds < $regularLostSeconds
+                );
+
+            if ($regularWillBeCovered && (int) $review->unjustified_absence_seconds > 0) {
+                $review->justified_absence_seconds = $regularLostSeconds;
+                $review->unjustified_absence_seconds = 0;
+            }
+
+            $review->justified_idle_seconds = min(
+                max((int) $review->hubstaff_idle_seconds, 0),
+                max((int) $review->justified_idle_seconds, 0) + max((int) $review->unjustified_idle_seconds, 0),
+            );
+
+            if ($regularWillBeCovered) {
+                $review->unjustified_idle_seconds = 0;
+            }
+
+            $review->save();
+        }
+
+        foreach ($affectedEmployees as $affectedEmployee) {
+            $service->recalculateEmployeePayrollResult($period, $affectedEmployee);
+        }
+
+        $this->info('Idle reconciliado y planilla de empleados afectados recalculada.');
+
+        return self::SUCCESS;
+    },
+)->purpose('Reconcilia idle no justificado cuando el tiempo normal del día ya estaba cubierto por justificación.');
 
 Artisan::command(
     'payroll:apply-edwin-cruz-training-hours {--period=4 : ID del período de planilla} {--employee=63 : ID del empleado} {--apply : Aplica el ajuste; sin esta opción solo muestra vista previa}',

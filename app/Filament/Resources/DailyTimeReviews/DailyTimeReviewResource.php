@@ -120,7 +120,7 @@ class DailyTimeReviewResource extends Resource
                                 ->rules(['regex:/^\d{1,3}:[0-5]\d$/'])
                                 ->validationMessages(['regex' => 'Ingresa el tiempo con formato HH:MM, por ejemplo 1:05.'])
                                 ->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))
-                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->justified_absence_seconds) : '0:00')),
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute(self::justifiedLostTimeSeconds($record)) : '0:00')),
                             Toggle::make('assigned_overtime_fulfilled')
                                 ->label('Cumplió la hora extra asignada')
                                 ->helperText('Actívalo cuando el supervisor confirma que la hora extra se cumplió; cualquier faltante no justificado se descontará como tiempo normal. Si queda inactivo, se paga proporcionalmente el tiempo extra trabajado o justificado después de completar las horas normales.')
@@ -218,7 +218,7 @@ class DailyTimeReviewResource extends Resource
         $parser = app(TimeParserService::class);
 
         return [
-            'justified_lost_time_hours' => $parser->secondsToHourMinute($record->justified_absence_seconds),
+            'justified_lost_time_hours' => $parser->secondsToHourMinute(self::justifiedLostTimeSeconds($record)),
             'absence_justified' => self::isFullyJustifiedAbsence($record),
         ];
     }
@@ -234,12 +234,21 @@ class DailyTimeReviewResource extends Resource
         $parser = app(TimeParserService::class);
 
         if (self::hasHubstaffTime($record)) {
-            $lostTimeSeconds = self::lostTimeSeconds($record);
-            $justifiedSeconds = min($parser->parseToSeconds($data['justified_lost_time_hours'] ?? 0), $lostTimeSeconds);
+            $regularLostSeconds = self::regularLostTimeSeconds($record);
+            $idleSeconds = max((int) $record->hubstaff_idle_seconds, 0);
+            $lostTimeSeconds = $regularLostSeconds + $idleSeconds;
+            $requestedJustifiedSeconds = $parser->parseToSeconds($data['justified_lost_time_hours'] ?? 0);
+            $justifiedSeconds = $requestedJustifiedSeconds >= self::roundedMinuteSeconds($lostTimeSeconds)
+                ? $lostTimeSeconds
+                : min($requestedJustifiedSeconds, $lostTimeSeconds);
+            $justifiedRegularSeconds = min($justifiedSeconds, $regularLostSeconds);
+            $justifiedIdleSeconds = min($justifiedSeconds - $justifiedRegularSeconds, $idleSeconds);
 
             $data['paid_day_off'] = false;
-            $data['justified_absence_seconds'] = $justifiedSeconds;
-            $data['unjustified_absence_seconds'] = max($lostTimeSeconds - $justifiedSeconds, 0);
+            $data['justified_absence_seconds'] = $justifiedRegularSeconds;
+            $data['unjustified_absence_seconds'] = max($regularLostSeconds - $justifiedRegularSeconds, 0);
+            $data['justified_idle_seconds'] = $justifiedIdleSeconds;
+            $data['unjustified_idle_seconds'] = max($idleSeconds - $justifiedIdleSeconds, 0);
         } else {
             $isOff = (bool) ($data['paid_day_off'] ?? false);
             $isJustifiedAbsence = (bool) ($data['absence_justified'] ?? false);
@@ -262,12 +271,29 @@ class DailyTimeReviewResource extends Resource
 
     private static function lostTimeSeconds(DailyTimeReview $record): int
     {
+        return self::regularLostTimeSeconds($record)
+            + max((int) $record->hubstaff_idle_seconds, 0);
+    }
+
+    private static function regularLostTimeSeconds(DailyTimeReview $record): int
+    {
         return max(
             self::requiredSeconds($record)
                 - (int) $record->hubstaff_total_seconds
                 - (int) $record->paid_time_not_tracked_seconds,
             0,
         );
+    }
+
+    private static function justifiedLostTimeSeconds(DailyTimeReview $record): int
+    {
+        return max((int) $record->justified_absence_seconds, 0)
+            + max((int) $record->justified_idle_seconds, 0);
+    }
+
+    private static function roundedMinuteSeconds(int $seconds): int
+    {
+        return (int) round(max($seconds, 0) / 60) * 60;
     }
 
     private static function requiredSeconds(DailyTimeReview $record): int

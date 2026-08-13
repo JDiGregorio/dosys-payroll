@@ -1169,4 +1169,36 @@ class FilamentPagesTest extends TestCase
         $this->assertSame([$openAdditionalDeduction->id], EmployeeAdditionalDeductionResource::getEloquentQuery()->whereKey([$openAdditionalDeduction->id, $closedAdditionalDeduction->id])->pluck('id')->all());
         $this->assertSame([$openDeduction->id], PayrollDeductionResource::getEloquentQuery()->whereKey([$openDeduction->id, $closedDeduction->id])->pluck('id')->all());
     }
+
+    public function test_daily_review_justified_time_covers_idle_and_rounded_seconds(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Justificación idle',
+            'starts_at' => '2026-08-01',
+            'ends_at' => '2026-08-15',
+        ]);
+        $employee = Employee::query()->create(['name' => 'Empleado con idle', 'active' => true]);
+        $review = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-08-05',
+            'expected_seconds' => 28800,
+            'expected_ordinary_seconds' => 28800,
+            'expected_paid_seconds' => 28800,
+            'hubstaff_total_seconds' => 28727,
+            'hubstaff_idle_seconds' => 300,
+            'unjustified_absence_seconds' => 73,
+            'unjustified_idle_seconds' => 300,
+            'status' => 'pendiente',
+        ]);
+
+        $data = DailyTimeReviewResource::secondsFromHourStates([
+            'justified_lost_time_hours' => '0:06',
+        ], $review);
+
+        $this->assertSame(73, $data['justified_absence_seconds']);
+        $this->assertSame(0, $data['unjustified_absence_seconds']);
+        $this->assertSame(300, $data['justified_idle_seconds']);
+        $this->assertSame(0, $data['unjustified_idle_seconds']);
+    }
 }
