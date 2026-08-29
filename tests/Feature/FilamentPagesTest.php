@@ -1170,7 +1170,7 @@ class FilamentPagesTest extends TestCase
         $this->assertSame([$openDeduction->id], PayrollDeductionResource::getEloquentQuery()->whereKey([$openDeduction->id, $closedDeduction->id])->pluck('id')->all());
     }
 
-    public function test_daily_review_justified_time_covers_idle_and_rounded_seconds(): void
+    public function test_daily_review_justified_time_ignores_idle_and_covers_rounded_seconds(): void
     {
         $period = PayrollPeriod::query()->create([
             'name' => 'Justificación idle',
@@ -1198,7 +1198,7 @@ class FilamentPagesTest extends TestCase
 
         $this->assertSame(73, $data['justified_absence_seconds']);
         $this->assertSame(0, $data['unjustified_absence_seconds']);
-        $this->assertSame(300, $data['justified_idle_seconds']);
-        $this->assertSame(0, $data['unjustified_idle_seconds']);
+        $this->assertArrayNotHasKey('justified_idle_seconds', $data);
+        $this->assertArrayNotHasKey('unjustified_idle_seconds', $data);
     }
 }

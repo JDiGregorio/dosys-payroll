@@ -2536,6 +2536,203 @@ class PayrollCalculationServiceTest extends TestCase
         ]);
     }
 
+    public function test_fixed_salary_employee_idle_is_informational_and_does_not_discount_salary(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Quincena con idle informativo',
+            'starts_at' => '2026-07-11',
+            'ends_at' => '2026-07-25',
+            'status' => 'en_revision',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Idle informativo test',
+            'daily_hours' => 8,
+            'monthly_salary' => 15000,
+            'semi_monthly_salary' => 7500,
+            'hourly_rate' => 62.5,
+            'salary_calculation_method' => 'hourly_actual_hours',
+        ]);
+
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-07-15',
+            'scheduled_work_day' => true,
+            'expected_seconds' => 28800,
+            'expected_ordinary_seconds' => 28800,
+            'expected_paid_seconds' => 28800,
+            'expected_hubstaff_seconds' => 28800,
+            'hubstaff_total_seconds' => 28800,
+            'hubstaff_idle_seconds' => 3600,
+            'unjustified_idle_seconds' => 3600,
+            'payable_seconds' => 28800,
+        ]);
+
+        app(PayrollCalculationService::class)->recalculateEmployeePayrollResult($period, $employee);
+
+        $this->assertDatabaseHas('payroll_results', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'unjustified_idle_seconds' => 3600,
+            'lost_time_seconds' => 0,
+            'lost_time_amount' => 0,
+            'worked_salary_amount' => 7500,
+            'net_amount' => 7500,
+        ]);
+    }
+
+    public function test_august_second_half_command_applies_targeted_payable_hours_and_day_off(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Planilla del 11 de agosto al 25 de agosto',
+            'starts_at' => '2026-08-11',
+            'ends_at' => '2026-08-25',
+            'status' => 'en_revision',
+        ]);
+        $victor = Employee::query()->create([
+            'id' => 45,
+            'name' => 'Victor Ariel Vasquez Nolasco',
+            'daily_hours' => 8,
+            'hourly_rate' => 100,
+            'monthly_salary' => 24000,
+            'active' => true,
+        ]);
+        $marco = Employee::query()->create([
+            'id' => 22,
+            'name' => 'Marco Antonio Lara',
+            'daily_hours' => 8,
+            'hourly_rate' => 100,
+            'monthly_salary' => 24000,
+            'active' => true,
+        ]);
+        $bradarick = Employee::query()->create([
+            'id' => 35,
+            'name' => 'Bradarick Antonio Pavon Fernandez',
+            'daily_hours' => 8,
+            'hourly_rate' => 100,
+            'monthly_salary' => 24000,
+            'active' => true,
+        ]);
+        $delmark = Employee::query()->create([
+            'id' => 43,
+            'name' => 'Delmark Roberto Sanders Jonhson',
+            'daily_hours' => 8,
+            'hourly_rate' => 100,
+            'monthly_salary' => 24000,
+            'active' => true,
+        ]);
+
+        foreach ([$victor, $marco] as $employee) {
+            foreach (['2026-08-20', '2026-08-24', '2026-08-25'] as $date) {
+                $hubstaffSeconds = $employee->is($victor) || $date === '2026-08-20' ? 36000 : 28955;
+                DailyTimeReview::query()->create([
+                    'payroll_period_id' => $period->id,
+                    'employee_id' => $employee->id,
+                    'date' => $date,
+                    'scheduled_work_day' => true,
+                    'expected_seconds' => 28800,
+                    'expected_ordinary_seconds' => 28800,
+                    'expected_paid_seconds' => 28800,
+                    'expected_hubstaff_seconds' => 28800,
+                    'hubstaff_total_seconds' => $hubstaffSeconds,
+                    'hubstaff_regular_seconds' => $hubstaffSeconds,
+                    'payable_seconds' => 28800,
+                    'status' => 'pendiente',
+                ]);
+            }
+        }
+
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $bradarick->id,
+            'date' => '2026-08-24',
+            'scheduled_work_day' => true,
+            'expected_seconds' => 28800,
+            'expected_ordinary_seconds' => 28800,
+            'expected_paid_seconds' => 28800,
+            'expected_hubstaff_seconds' => 28800,
+            'hubstaff_total_seconds' => 28600,
+            'hubstaff_regular_seconds' => 28600,
+            'payable_seconds' => 28600,
+            'unjustified_absence_seconds' => 200,
+        ]);
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $bradarick->id,
+            'hubstaff_member' => $bradarick->name,
+            'date' => '2026-08-24',
+            'total_seconds' => 28600,
+            'regular_seconds' => 28600,
+            'active' => true,
+        ]);
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $delmark->id,
+            'date' => '2026-08-20',
+            'scheduled_work_day' => true,
+            'expected_seconds' => 28800,
+            'expected_ordinary_seconds' => 28800,
+            'expected_paid_seconds' => 28800,
+            'expected_hubstaff_seconds' => 28800,
+            'hubstaff_total_seconds' => 28800,
+            'payable_seconds' => 28800,
+        ]);
+        PayrollOvertimeAdjustment::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $delmark->id,
+            'hours' => 8,
+            'hourly_rate' => 78.125,
+            'amount' => 625,
+            'description' => 'OT RRD',
+            'active' => true,
+        ]);
+
+        $exitCode = Artisan::call('payroll:apply-august-second-half-corrections', [
+            '--period' => $period->id,
+            '--apply' => true,
+        ]);
+
+        $this->assertSame(0, $exitCode, Artisan::output());
+
+        foreach ([$victor, $marco] as $employee) {
+            foreach (['2026-08-20', '2026-08-24', '2026-08-25'] as $date) {
+                $this->assertDatabaseHas('daily_time_reviews', [
+                    'payroll_period_id' => $period->id,
+                    'employee_id' => $employee->id,
+                    'date' => $date.' 00:00:00',
+                    'payable_seconds' => 36000,
+                    'preassigned_overtime_seconds' => 7200,
+                    'unjustified_absence_seconds' => 0,
+                    'status' => 'revisado_supervisor',
+                ]);
+            }
+        }
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $bradarick->id,
+            'date' => '2026-08-24 00:00:00',
+            'scheduled_work_day' => false,
+            'paid_day_off' => true,
+            'hubstaff_total_seconds' => 0,
+            'payable_seconds' => 28800,
+            'unjustified_absence_seconds' => 0,
+        ]);
+        $this->assertDatabaseHas('hubstaff_time_entries', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $bradarick->id,
+            'date' => '2026-08-24 00:00:00',
+            'active' => false,
+        ]);
+        $this->assertDatabaseHas('payroll_overtime_adjustments', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $delmark->id,
+            'amount' => 625,
+            'active' => true,
+        ]);
+    }
+
     public function test_edwin_cruz_training_hours_command_recalculates_only_the_target_employee_case(): void
     {
         $period = PayrollPeriod::query()->create([

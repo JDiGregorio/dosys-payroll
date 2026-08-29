@@ -3,6 +3,7 @@
 use App\Models\DailyTimeReview;
 use App\Models\Employee;
 use App\Models\PayrollPeriod;
+use App\Services\AugustSecondHalfPayrollCorrectionsService;
 use App\Services\EmployeeScheduleTransitionService;
 use App\Services\EmployeeTrainingHoursAdjustmentService;
 use App\Services\JulySecondHalfPayrollCorrectionsService;
@@ -322,6 +323,47 @@ Artisan::command(
         return self::SUCCESS;
     },
 )->purpose('Aplica ajustes puntuales de Priscila, Dereck y Edwin para la segunda quincena de julio 2026.');
+
+Artisan::command(
+    'payroll:apply-august-second-half-corrections {--period=7 : ID del período de planilla} {--apply : Aplica el ajuste; sin esta opción solo muestra vista previa}',
+    function (AugustSecondHalfPayrollCorrectionsService $service): int {
+        $period = PayrollPeriod::query()->find((int) $this->option('period'));
+
+        if (! $period) {
+            $this->error('Debes indicar un período válido con --period=ID.');
+
+            return self::FAILURE;
+        }
+
+        try {
+            $rows = $this->option('apply')
+                ? $service->apply($period)
+                : $service->preview($period);
+        } catch (Throwable $exception) {
+            $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        }
+
+        $this->info("Período: {$period->name} ({$period->id})");
+        $this->table(
+            ['ID', 'Empleado', 'Acción', 'Antes', 'Después'],
+            collect($rows)->map(fn (array $row): array => [
+                $row['employee_id'],
+                $row['employee'],
+                $row['action'],
+                $row['before'],
+                $row['after'],
+            ])->all(),
+        );
+
+        $this->info($this->option('apply')
+            ? 'Ajustes aplicados y planilla de empleados afectados recalculada.'
+            : 'Vista previa únicamente. Agrega --apply para ejecutar el ajuste.');
+
+        return self::SUCCESS;
+    },
+)->purpose('Aplica ajustes puntuales de Victor, Marco, Bradarick y Delmark para la segunda quincena de agosto 2026.');
 
 Artisan::command(
     'payroll:apply-employee-schedule-transition {--period= : ID del período de planilla} {--employee=Elalf Shamir Dominguez Pineda : Nombre exacto o prefijo del empleado} {--rotative-start=2026-06-11 : Primera fecha bajo jornada rotativa} {--rotative-end=2026-06-13 : Última fecha bajo jornada rotativa} {--diurnal-start=2026-06-14 : Primera fecha bajo jornada diurna} {--apply : Aplica la transición; sin esta opción solo muestra vista previa}',

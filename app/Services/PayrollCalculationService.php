@@ -165,23 +165,17 @@ class PayrollCalculationService
             fn (DailyTimeReview $review): int => $this->regularUnjustifiedSeconds($review),
         );
         $salaryCalculationMethod = $this->effectiveSalaryCalculationMethod($period, $employee);
-        $idleLostSeconds = $salaryCalculationMethod === 'semi_monthly_fixed_with_deductions'
-            ? (int) $reviews->sum(fn (DailyTimeReview $review): int => min(
-                max((int) $review->unjustified_idle_seconds, 0),
-                max((int) $review->hubstaff_idle_seconds, 0),
-            ))
-            : 0;
+        $idleLostSeconds = 0;
         $overtimeLostSeconds = 0;
         $regularLostAmount = ($regularLostSeconds / 3600) * $hourlyRate;
         $overtimeLostAmount = 0.0;
         $absenceDeduction = round($regularLostAmount, 2);
-        $idleDeduction = round(($idleLostSeconds / 3600) * $hourlyRate, 2);
         $lostTimeSeconds = $regularLostSeconds + $idleLostSeconds + $overtimeLostSeconds;
-        $lostTimeAmount = round($absenceDeduction + $idleDeduction + $overtimeLostAmount, 2);
+        $lostTimeAmount = round($absenceDeduction + $overtimeLostAmount, 2);
         $expectedOrdinarySeconds = (int) $reviews->sum('expected_ordinary_seconds');
         $workedSalary = round(match ($salaryCalculationMethod) {
             'semi_monthly_fixed_with_deductions' => max(
-                $fixedSalaryBase - $absenceDeduction - $idleDeduction,
+                $fixedSalaryBase - $absenceDeduction,
                 0,
             ),
             'monthly_calendar_prorated' => $workedDays * $dailyRate,
@@ -247,7 +241,7 @@ class PayrollCalculationService
                 'scheduled_shift_prorated',
             ], true) ? round($fixedSalaryBase, 2) : $workedSalary,
             'absence_deduction' => $absenceDeduction,
-            'idle_deduction' => $idleDeduction,
+            'idle_deduction' => 0,
             'extra_bonuses_amount' => round($extraBonuses, 2),
             'referred_bonus_amount' => round($referredBonus, 2),
             'adjustment_bonus_amount' => round($tierAdjustmentBonus, 2),
@@ -313,6 +307,7 @@ class PayrollCalculationService
     {
         DB::transaction(function () use ($period): void {
             app(JulySecondHalfPayrollCorrectionsService::class)->applyForPeriod($period);
+            app(AugustSecondHalfPayrollCorrectionsService::class)->applyForPeriod($period);
 
             $manualReviewState = $this->manualReviewState($period);
             $bonusState = $period->payrollBonuses()->orderBy('id')->get()->map->getAttributes()->all();
@@ -352,6 +347,7 @@ class PayrollCalculationService
     {
         DB::transaction(function () use ($period, $employee): void {
             app(JulySecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
+            app(AugustSecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
 
             $manualReviewState = $this->manualReviewState($period, $employee);
             $entriesByEmployeeDate = HubstaffTimeEntry::query()
@@ -767,7 +763,7 @@ class PayrollCalculationService
                 $this->calculateDailyReview($review, $employee);
             }
 
-            $this->applyJulySecondHalfPayrollCorrections($period, $employee);
+            $this->applyPeriodSpecificPayrollCorrections($period, $employee);
 
             return;
         }
@@ -858,12 +854,13 @@ class PayrollCalculationService
                 }
             });
 
-        $this->applyJulySecondHalfPayrollCorrections($period, $employee);
+        $this->applyPeriodSpecificPayrollCorrections($period, $employee);
     }
 
-    private function applyJulySecondHalfPayrollCorrections(PayrollPeriod $period, Employee $employee): void
+    private function applyPeriodSpecificPayrollCorrections(PayrollPeriod $period, Employee $employee): void
     {
         app(JulySecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
+        app(AugustSecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
     }
 
     private function weekKey(Carbon $date): string
