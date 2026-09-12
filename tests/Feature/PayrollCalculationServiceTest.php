@@ -2974,6 +2974,34 @@ class PayrollCalculationServiceTest extends TestCase
                 'lost_time_seconds' => 0,
             ]);
         }
+
+        $franciscoReview = DailyTimeReview::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', $francisco->id)
+            ->whereDate('date', '2026-09-05')
+            ->firstOrFail();
+        $franciscoReview->update([
+            'paid_day_off' => true,
+            'status' => 'revisado_supervisor',
+            'supervisor_comment' => 'OFF validado por supervisor',
+        ]);
+
+        app(PayrollCalculationService::class)->recalculateDailyReview($franciscoReview->fresh());
+        Artisan::call('payroll:apply-september-first-half-corrections', [
+            '--period' => $period->id,
+            '--apply' => true,
+        ]);
+
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $francisco->id,
+            'date' => '2026-09-05 00:00:00',
+            'paid_day_off' => true,
+            'payable_seconds' => 28800,
+            'unjustified_absence_seconds' => 0,
+            'status' => 'revisado_supervisor',
+            'supervisor_comment' => 'OFF validado por supervisor',
+        ]);
     }
 
     public function test_edwin_cruz_training_hours_command_recalculates_only_the_target_employee_case(): void

@@ -267,6 +267,10 @@ class SeptemberFirstHalfPayrollCorrectionsService
         ]);
         $expectation = $this->scheduleExpectationService->forDate($employee, Carbon::parse(self::SATURDAY_DATE));
         $ordinarySeconds = (int) $expectation['expected_ordinary_seconds'];
+        $preservePaidDayOff = (bool) $review->paid_day_off;
+        $payableSeconds = $preservePaidDayOff
+            ? $this->paidDayOffSeconds($employee, $ordinarySeconds, (bool) $expectation['scheduled_work_day'], (string) $expectation['schedule_type'])
+            : 0;
 
         $review->fill([
             'scheduled_work_day' => (bool) $expectation['scheduled_work_day'],
@@ -285,22 +289,35 @@ class SeptemberFirstHalfPayrollCorrectionsService
             'idle_percentage' => null,
             'pto_seconds' => 0,
             'holiday_seconds' => 0,
-            'paid_day_off' => false,
+            'paid_day_off' => $preservePaidDayOff,
             'paid_break_seconds' => 0,
             'paid_time_not_tracked_seconds' => 0,
             'pending_idle_seconds' => 0,
             'justified_idle_seconds' => 0,
             'unjustified_idle_seconds' => 0,
             'justified_absence_seconds' => 0,
-            'unjustified_absence_seconds' => $ordinarySeconds,
+            'unjustified_absence_seconds' => $preservePaidDayOff ? 0 : $ordinarySeconds,
             'possible_overtime_seconds' => 0,
             'approved_overtime_seconds' => 0,
-            'payable_seconds' => 0,
+            'payable_seconds' => $payableSeconds,
             'difference_seconds' => -$ordinarySeconds,
-            'status' => 'pendiente',
-            'supervisor_comment' => self::SATURDAY_COMMENT,
+            'status' => $preservePaidDayOff ? $review->status : 'pendiente',
+            'supervisor_comment' => $preservePaidDayOff ? $review->supervisor_comment : self::SATURDAY_COMMENT,
         ]);
         $review->save();
+    }
+
+    private function paidDayOffSeconds(Employee $employee, int $ordinarySeconds, bool $scheduledWorkDay, string $scheduleType): int
+    {
+        if ($ordinarySeconds > 0) {
+            return $ordinarySeconds;
+        }
+
+        if (! $scheduledWorkDay && $scheduleType === 'rotativa') {
+            return 0;
+        }
+
+        return $this->hoursToSeconds((float) ($employee->daily_hours ?: 8));
     }
 
     private function applyAshleyCorrection(PayrollPeriod $period, Employee $employee): void
@@ -575,6 +592,11 @@ class SeptemberFirstHalfPayrollCorrectionsService
         $minutes = intdiv($seconds % 3600, 60);
 
         return sprintf('%d:%02d', $hours, $minutes);
+    }
+
+    private function hoursToSeconds(float $hours): int
+    {
+        return max((int) round($hours * 3600), 0);
     }
 
     private function normalizeName(string $name): string
