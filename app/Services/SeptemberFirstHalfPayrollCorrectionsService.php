@@ -26,6 +26,42 @@ class SeptemberFirstHalfPayrollCorrectionsService
         'Wilman Agurcia',
     ];
 
+    private const SATURDAY_DUPLICATE_NINE_HOUR_NAMES = [
+        'Alexa Enamorado',
+        'Andrea Romero',
+        'Angela Lapresta',
+        'Annie Hernandez',
+        'Bradarick Pavon',
+        'Brenden Murillo',
+        'Bryan Molina',
+        'Carley Dixon',
+        'Christian Figueroa',
+        'Delmark Sanders',
+        'Dereck Aguilar',
+        'Diego Miranda',
+        'Eduardo Mahoudeau',
+        'Elalf Dominguez',
+        'Emely Mejia',
+        'Ephram Brito',
+        'Fredy Oviedo',
+        'Hector Benitez',
+        'Ilce Miralda',
+        'Katherine Najera',
+        'Kelvin Rivera',
+        'Lourdes Cartagena',
+        'Melany Martinez',
+        'Moises Molina',
+        'Ricardo Portillo',
+        'Said Moya',
+        'Sandro Aplicano',
+        'Seily Ortiz',
+        'Sharon Martinez',
+        'Sharon Reyes',
+        'Shone Nelson',
+        'Valery Bermudez',
+        'Zelda Brooks',
+    ];
+
     private const ASHLEY_NAME = 'Ashley Escobar';
 
     private const ADMIN_NAMES = [
@@ -59,6 +95,16 @@ class SeptemberFirstHalfPayrollCorrectionsService
                 'action' => 'Remover tiempo sábado 5',
                 'before' => $this->reviewSummary($this->review($period, $employee, self::SATURDAY_DATE)),
                 'after' => 'Sin horas activas, sin OFF, no pagado salvo revisión posterior.',
+            ];
+        }
+
+        foreach ($this->saturdayDuplicateNineHourEmployees() as $employee) {
+            $rows[] = [
+                'employee_id' => $employee->id,
+                'employee' => $employee->name,
+                'action' => 'Remover 9h Sin proyecto sábado 5',
+                'before' => $this->saturdayEntriesSummary($period, $employee),
+                'after' => 'Se conserva el tiempo real y se excluye solo el bloque Sin proyecto 9:00.',
             ];
         }
 
@@ -103,10 +149,19 @@ class SeptemberFirstHalfPayrollCorrectionsService
             $this->ensureSeptemberFirstHalfPeriod($period);
 
             $affected = collect();
+            $regenerated = collect();
 
             foreach ($this->saturdayNoWorkEmployees() as $employee) {
                 $this->applySaturdayNoWork($period, $employee);
                 $affected->push($employee->id);
+            }
+
+            foreach ($this->saturdayDuplicateNineHourEmployees() as $employee) {
+                if ($this->applySaturdayDuplicateNineHourCleanup($period, $employee) > 0) {
+                    $this->payrollCalculationService->regenerateEmployeeDailyReviews($period, $employee);
+                    $affected->push($employee->id);
+                    $regenerated->push($employee->id);
+                }
             }
 
             if ($ashley = $this->employeeByName(self::ASHLEY_NAME)) {
@@ -121,6 +176,7 @@ class SeptemberFirstHalfPayrollCorrectionsService
 
             Employee::query()
                 ->whereIn('id', $affected->unique()->values()->all())
+                ->whereNotIn('id', $regenerated->unique()->values()->all())
                 ->get()
                 ->each(fn (Employee $employee): null => $this->payrollCalculationService->recalculateEmployeePayrollResult($period, $employee));
 
@@ -135,6 +191,9 @@ class SeptemberFirstHalfPayrollCorrectionsService
         }
 
         $this->saturdayNoWorkEmployees()
+            ->each(fn (Employee $employee): bool => $this->applyForEmployee($period, $employee));
+
+        $this->saturdayDuplicateNineHourEmployees()
             ->each(fn (Employee $employee): bool => $this->applyForEmployee($period, $employee));
 
         $this->adminEmployees()
@@ -156,6 +215,10 @@ class SeptemberFirstHalfPayrollCorrectionsService
         if ($this->isSaturdayNoWorkEmployee($employee)) {
             $this->applySaturdayNoWork($period, $employee);
             $applied = true;
+        }
+
+        if ($this->isSaturdayDuplicateNineHourEmployee($employee)) {
+            $applied = $this->applySaturdayDuplicateNineHourCleanup($period, $employee) > 0 || $applied;
         }
 
         if ($this->isAdminEmployee($employee)) {
@@ -251,6 +314,23 @@ class SeptemberFirstHalfPayrollCorrectionsService
 
         $this->payrollCalculationService->regenerateEmployeeDailyReviews($period, $employee->fresh());
         $this->applySaturdayNoWork($period, $employee->fresh());
+    }
+
+    private function applySaturdayDuplicateNineHourCleanup(PayrollPeriod $period, Employee $employee): int
+    {
+        return HubstaffTimeEntry::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', $employee->id)
+            ->whereDate('date', self::SATURDAY_DATE)
+            ->where('active', true)
+            ->where('regular_seconds', 0)
+            ->where('total_seconds', 32400)
+            ->where(function ($query): void {
+                $query->whereNull('project')
+                    ->orWhere('project', '')
+                    ->orWhere('project', 'Sin proyecto');
+            })
+            ->update(['active' => false]);
     }
 
     private function applyAshleyHoursOnly(Employee $employee): void
@@ -355,6 +435,18 @@ class SeptemberFirstHalfPayrollCorrectionsService
             ->values();
     }
 
+    /**
+     * @return Collection<int, Employee>
+     */
+    private function saturdayDuplicateNineHourEmployees(): Collection
+    {
+        return collect(self::SATURDAY_DUPLICATE_NINE_HOUR_NAMES)
+            ->map(fn (string $name): ?Employee => $this->employeeByName($name))
+            ->filter()
+            ->unique('id')
+            ->values();
+    }
+
     private function employeeByName(string $name): ?Employee
     {
         return Employee::query()
@@ -372,6 +464,11 @@ class SeptemberFirstHalfPayrollCorrectionsService
     private function isAdminEmployee(Employee $employee): bool
     {
         return $this->matchesAnyName($employee, self::ADMIN_NAMES);
+    }
+
+    private function isSaturdayDuplicateNineHourEmployee(Employee $employee): bool
+    {
+        return $this->matchesAnyName($employee, self::SATURDAY_DUPLICATE_NINE_HOUR_NAMES);
     }
 
     /**
@@ -453,6 +550,23 @@ class SeptemberFirstHalfPayrollCorrectionsService
             $review->paid_day_off ? 'sí' : 'no',
             $review->status,
         );
+    }
+
+    private function saturdayEntriesSummary(PayrollPeriod $period, Employee $employee): string
+    {
+        $entries = HubstaffTimeEntry::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', $employee->id)
+            ->whereDate('date', self::SATURDAY_DATE)
+            ->where('active', true)
+            ->get();
+        $duplicateSeconds = (int) $entries
+            ->filter(fn (HubstaffTimeEntry $entry): bool => (int) $entry->regular_seconds === 0
+                && (int) $entry->total_seconds === 32400
+                && in_array((string) $entry->project, ['', 'Sin proyecto'], true))
+            ->sum('total_seconds');
+
+        return 'Activo '.$this->hours((int) $entries->sum('total_seconds')).', bloque Sin proyecto '.$this->hours($duplicateSeconds);
     }
 
     private function hours(int $seconds): string

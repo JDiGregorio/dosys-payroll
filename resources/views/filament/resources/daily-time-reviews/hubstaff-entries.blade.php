@@ -1,8 +1,10 @@
 @php
     use App\Models\HubstaffTimeEntry;
     use App\Services\TimeParserService;
+    use App\Filament\Resources\DailyTimeReviews\DailyTimeReviewResource;
 
     $parser = app(TimeParserService::class);
+    $timeTrackingLabel = DailyTimeReviewResource::timeTrackingLabel($record);
     $entries = $record
         ? HubstaffTimeEntry::query()
             ->where('payroll_period_id', $record->payroll_period_id)
@@ -17,7 +19,7 @@
 <div class="hubstaff-detail">
     <div class="hubstaff-detail__header">
         <div>
-            <div class="hubstaff-detail__title">Detalle importado desde Hubstaff</div>
+            <div class="hubstaff-detail__title">Detalle importado desde {{ $timeTrackingLabel }}</div>
             <div class="hubstaff-detail__subtitle">
                 {{ $record?->employee?->name }} · {{ $record?->date?->format('d/m/Y') }}
             </div>
@@ -72,7 +74,7 @@
                 @empty
                     <tr>
                         <td colspan="7" class="hubstaff-detail__empty">
-                            No hay registros de Hubstaff para este empleado y fecha.
+                            No hay registros de {{ $timeTrackingLabel }} para este empleado y fecha.
                         </td>
                     </tr>
                 @endforelse

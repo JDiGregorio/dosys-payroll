@@ -306,6 +306,43 @@ class FilamentPagesTest extends TestCase
         );
     }
 
+    public function test_daily_review_calendar_uses_trackabi_label_for_palmetto(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Trackabi Calendar',
+            'email' => 'calendar-trackabi-rrhh@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $campaign = Campaign::query()->create(['name' => 'Palmetto']);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Septiembre Trackabi',
+            'starts_at' => '2026-09-01',
+            'ends_at' => '2026-09-15',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado Palmetto Calendar',
+            'campaign_id' => $campaign->id,
+            'active' => true,
+        ]);
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-09-02',
+            'expected_seconds' => 28800,
+            'hubstaff_total_seconds' => 28800,
+            'payable_seconds' => 28800,
+        ]);
+
+        $this->actingAs($user);
+
+        $this->get("/admin/daily-review-calendar?period_id={$period->id}&employee_id={$employee->id}")
+            ->assertOk()
+            ->assertSee('Trackabi')
+            ->assertDontSee('Hubstaff');
+    }
+
     public function test_daily_review_calendar_can_select_closed_periods_for_reference(): void
     {
         $user = User::query()->create([
@@ -894,6 +931,57 @@ class FilamentPagesTest extends TestCase
             ->assertSee('Registros de Hubstaff')
             ->assertSee('Operations Detail')
             ->assertSee('7:30:00');
+    }
+
+    public function test_daily_review_edit_uses_trackabi_label_for_palmetto(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH Trackabi Detail',
+            'email' => 'rrhh-trackabi-detail@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+        $campaign = Campaign::query()->create(['name' => 'Palmetto']);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Detalle Trackabi',
+            'starts_at' => '2026-09-01',
+            'ends_at' => '2026-09-15',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado Palmetto Detail',
+            'campaign_id' => $campaign->id,
+            'active' => true,
+        ]);
+        $review = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-09-03',
+            'expected_seconds' => 28800,
+            'expected_hubstaff_seconds' => 28800,
+            'hubstaff_total_seconds' => 27000,
+            'payable_seconds' => 27000,
+        ]);
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'source_provider' => 'trackabi',
+            'hubstaff_member' => $employee->name,
+            'date' => '2026-09-03',
+            'project' => 'Palmetto',
+            'regular_seconds' => 27000,
+            'total_seconds' => 27000,
+        ]);
+
+        $this->actingAs($user);
+
+        $this->get("/admin/daily-time-reviews/{$review->id}/edit")
+            ->assertOk()
+            ->assertSee('Registros de Trackabi')
+            ->assertSee('Horas esperadas Trackabi')
+            ->assertSee('Total horas Trackabi')
+            ->assertSee('Detalle importado desde Trackabi')
+            ->assertDontSee('Registros de Hubstaff');
     }
 
     public function test_closed_period_daily_review_is_read_only(): void

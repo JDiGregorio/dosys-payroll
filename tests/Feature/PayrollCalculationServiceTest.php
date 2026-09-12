@@ -2791,7 +2791,7 @@ class PayrollCalculationServiceTest extends TestCase
             'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
             'active' => true,
         ]);
-        $outside = Employee::query()->create([
+        $alexa = Employee::query()->create([
             'name' => 'Alexa Valeria Enamorado Ayala',
             'campaign_id' => $rrd->id,
             'daily_hours' => 8,
@@ -2799,8 +2799,16 @@ class PayrollCalculationServiceTest extends TestCase
             'monthly_salary' => 24000,
             'active' => true,
         ]);
+        $outside = Employee::query()->create([
+            'name' => 'Empleado fuera de lista',
+            'campaign_id' => $rrd->id,
+            'daily_hours' => 8,
+            'hourly_rate' => 100,
+            'monthly_salary' => 24000,
+            'active' => true,
+        ]);
 
-        foreach ([$palmettoEmployee, $francisco, $ashley, $jonathan, $outside] as $employee) {
+        foreach ([$palmettoEmployee, $francisco, $ashley, $jonathan] as $employee) {
             HubstaffTimeEntry::query()->create([
                 'payroll_period_id' => $period->id,
                 'employee_id' => $employee->id,
@@ -2826,6 +2834,53 @@ class PayrollCalculationServiceTest extends TestCase
                 'supervisor_comment' => 'Revisión previa',
             ]);
         }
+
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $alexa->id,
+            'hubstaff_member' => $alexa->name,
+            'date' => '2026-09-05',
+            'project' => 'Sin proyecto',
+            'team' => 'RRD FINANCIAL',
+            'regular_seconds' => 0,
+            'total_seconds' => 32400,
+            'active' => true,
+        ]);
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $alexa->id,
+            'hubstaff_member' => $alexa->name,
+            'date' => '2026-09-05',
+            'project' => 'RRD FINANCIAL',
+            'team' => 'RRD FINANCIAL',
+            'regular_seconds' => 23211,
+            'total_seconds' => 23211,
+            'active' => true,
+        ]);
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $alexa->id,
+            'date' => '2026-09-05',
+            'scheduled_work_day' => true,
+            'expected_seconds' => 28800,
+            'expected_ordinary_seconds' => 28800,
+            'expected_paid_seconds' => 28800,
+            'expected_hubstaff_seconds' => 28800,
+            'hubstaff_total_seconds' => 55611,
+            'hubstaff_regular_seconds' => 23211,
+            'payable_seconds' => 28800,
+            'status' => 'pendiente',
+        ]);
+        HubstaffTimeEntry::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $outside->id,
+            'hubstaff_member' => $outside->name,
+            'date' => '2026-09-05',
+            'project' => 'Sin proyecto',
+            'regular_seconds' => 0,
+            'total_seconds' => 32400,
+            'active' => true,
+        ]);
 
         DailyTimeReview::query()->create([
             'payroll_period_id' => $period->id,
@@ -2866,6 +2921,28 @@ class PayrollCalculationServiceTest extends TestCase
             ]);
         }
 
+        $this->assertDatabaseHas('hubstaff_time_entries', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $alexa->id,
+            'date' => '2026-09-05 00:00:00',
+            'project' => 'Sin proyecto',
+            'total_seconds' => 32400,
+            'active' => false,
+        ]);
+        $this->assertDatabaseHas('hubstaff_time_entries', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $alexa->id,
+            'date' => '2026-09-05 00:00:00',
+            'project' => 'RRD FINANCIAL',
+            'total_seconds' => 23211,
+            'active' => true,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $alexa->id,
+            'date' => '2026-09-05 00:00:00',
+            'hubstaff_total_seconds' => 23211,
+        ]);
         $this->assertDatabaseHas('hubstaff_time_entries', [
             'payroll_period_id' => $period->id,
             'employee_id' => $outside->id,

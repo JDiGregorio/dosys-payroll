@@ -10,6 +10,7 @@ use App\Filament\Resources\PayrollResults\Pages\ViewPayrollResult;
 use App\Models\PayrollResult;
 use App\Services\PayrollVoucherSender;
 use App\Services\TimeParserService;
+use App\Support\TimeTrackingSource;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
@@ -122,9 +123,9 @@ class PayrollResultResource extends Resource
                                 ->dehydrated(false)
                                 ->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record?->displayWorkedDays() ?? 0)),
                             TextInput::make('scheduled_days')->label('Días programados')->numeric(),
-                            TextInput::make('expected_hubstaff_hours')->label('Horas esperadas Hubstaff')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->expected_hubstaff_seconds) : '0:00')),
+                            TextInput::make('expected_hubstaff_hours')->label(fn (?PayrollResult $record): string => 'Horas esperadas '.self::timeTrackingLabel($record))->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->expected_hubstaff_seconds) : '0:00')),
                             TextInput::make('expected_paid_hours')->label('Horas pagadas esperadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->expected_paid_seconds) : '0:00')),
-                            TextInput::make('hubstaff_hours')->label('Horas trabajadas Hubstaff')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->hubstaff_total_seconds) : '0:00')),
+                            TextInput::make('hubstaff_hours')->label(fn (?PayrollResult $record): string => 'Horas trabajadas '.self::timeTrackingLabel($record))->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->hubstaff_total_seconds) : '0:00')),
                             TextInput::make('payable_hours')->label('Horas pagables')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->payable_seconds) : '0:00')),
                             TextInput::make('worked_salary_amount')->label('Salario')->numeric(),
                             TextInput::make('lost_time_hours')
@@ -229,6 +230,15 @@ class PayrollResultResource extends Resource
             'aprobado' => 'Aprobado',
             'cerrado' => 'Cerrado',
         ];
+    }
+
+    public static function timeTrackingLabel(?PayrollResult $record): string
+    {
+        $employee = $record?->relationLoaded('employee')
+            ? $record->employee
+            : $record?->employee()->with('campaign')->first();
+
+        return TimeTrackingSource::labelForEmployee($employee);
     }
 
     public static function sendVoucherAction(): Action
