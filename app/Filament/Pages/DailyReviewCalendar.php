@@ -7,6 +7,7 @@ use App\Models\DailyTimeReview;
 use App\Models\Employee;
 use App\Models\PayrollPeriod;
 use App\Services\TimeParserService;
+use App\Support\TimeTrackingSource;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Carbon\CarbonPeriod;
@@ -72,7 +73,16 @@ class DailyReviewCalendar extends Page
 
     public function selectedEmployee(): ?Employee
     {
-        return $this->employeeId ? Employee::query()->find($this->employeeId) : null;
+        return $this->employeeId ? Employee::query()->with('campaign')->find($this->employeeId) : null;
+    }
+
+    public function timeTrackingLabel(?DailyTimeReview $review = null): string
+    {
+        $employee = $review?->relationLoaded('employee')
+            ? $review->employee
+            : $review?->employee()->with('campaign')->first();
+
+        return TimeTrackingSource::labelForEmployee($employee ?: $this->selectedEmployee());
     }
 
     public function calendarDays(): Collection
@@ -112,6 +122,7 @@ class DailyReviewCalendar extends Page
         }
 
         return DailyTimeReview::query()
+            ->with('employee.campaign')
             ->where('payroll_period_id', $this->periodId)
             ->where('employee_id', $this->employeeId)
             ->get()

@@ -328,6 +328,7 @@
 
         @php
             $reviewsByDate = $this->reviewsByDate();
+            $timeTrackingLabel = $this->timeTrackingLabel();
         @endphp
 
         <div class="dr-calendar-shell" wire:key="daily-review-calendar-{{ $periodId }}-{{ $employeeId }}">
@@ -400,7 +401,7 @@
                                             </div>
                                         @else
                                             <div class="dr-event-row">
-                                                <span>Hubstaff</span>
+                                                <span>{{ $timeTrackingLabel }}</span>
                                                 <strong>{{ $this->hours($review->hubstaff_total_seconds) }} h</strong>
                                             </div>
                                             <div class="dr-event-row">

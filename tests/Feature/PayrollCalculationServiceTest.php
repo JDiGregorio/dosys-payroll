@@ -2733,6 +2733,172 @@ class PayrollCalculationServiceTest extends TestCase
         ]);
     }
 
+    public function test_september_first_half_command_applies_saturday_admin_and_ashley_corrections(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Planilla del 26 de agosto al 10 de septiembre',
+            'starts_at' => '2026-08-26',
+            'ends_at' => '2026-09-10',
+            'status' => 'en_revision',
+        ]);
+        $palmetto = Campaign::query()->create(['name' => 'Palmetto']);
+        $rrd = Campaign::query()->create(['name' => 'RRD FINANCIAL']);
+        $autoFinance = Campaign::query()->create(['name' => 'AUTO FINANCE CENTER']);
+        $dosys = Campaign::query()->create(['name' => 'Dosys BPO']);
+        $palmettoEmployee = Employee::query()->create([
+            'name' => 'Rene Wilfredo Refsman Maradiaga',
+            'hubstaff_name' => 'Rene Refsman',
+            'campaign_id' => $palmetto->id,
+            'daily_hours' => 8,
+            'hourly_rate' => 100,
+            'monthly_salary' => 24000,
+            'active' => true,
+        ]);
+        $francisco = Employee::query()->create([
+            'name' => 'Francisco Adalid Bejarano Lobo',
+            'hubstaff_name' => 'Francisco Bejarano',
+            'campaign_id' => $rrd->id,
+            'daily_hours' => 8,
+            'hourly_rate' => 100,
+            'monthly_salary' => 24000,
+            'active' => true,
+        ]);
+        $ashley = Employee::query()->create([
+            'name' => 'Ashley Michelle Escobar Melgar',
+            'hubstaff_name' => 'Ashley Escobar',
+            'campaign_id' => $rrd->id,
+            'daily_hours' => 6,
+            'hourly_rate' => 100,
+            'monthly_salary' => 24000,
+            'active' => true,
+        ]);
+        $jonathan = Employee::query()->create([
+            'name' => 'Jonathan Eduardo Garcia Trujillo',
+            'hubstaff_name' => 'Jonathan Garcia',
+            'campaign_id' => $autoFinance->id,
+            'daily_hours' => 8,
+            'hourly_rate' => 100,
+            'monthly_salary' => 24000,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'active' => true,
+        ]);
+        $orely = Employee::query()->create([
+            'name' => 'Orely Samantha Ramirez Bogran',
+            'campaign_id' => $dosys->id,
+            'daily_hours' => 8,
+            'hourly_rate' => 100,
+            'monthly_salary' => 24000,
+            'salary_calculation_method' => 'semi_monthly_fixed_with_deductions',
+            'active' => true,
+        ]);
+        $outside = Employee::query()->create([
+            'name' => 'Alexa Valeria Enamorado Ayala',
+            'campaign_id' => $rrd->id,
+            'daily_hours' => 8,
+            'hourly_rate' => 100,
+            'monthly_salary' => 24000,
+            'active' => true,
+        ]);
+
+        foreach ([$palmettoEmployee, $francisco, $ashley, $jonathan, $outside] as $employee) {
+            HubstaffTimeEntry::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'hubstaff_member' => $employee->name,
+                'date' => '2026-09-05',
+                'regular_seconds' => 32400,
+                'total_seconds' => 32400,
+                'active' => true,
+            ]);
+            DailyTimeReview::query()->create([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'date' => '2026-09-05',
+                'scheduled_work_day' => true,
+                'expected_seconds' => 28800,
+                'expected_ordinary_seconds' => 28800,
+                'expected_paid_seconds' => 28800,
+                'expected_hubstaff_seconds' => 28800,
+                'hubstaff_total_seconds' => 32400,
+                'hubstaff_regular_seconds' => 32400,
+                'payable_seconds' => 28800,
+                'status' => 'revisado_supervisor',
+                'supervisor_comment' => 'Revisión previa',
+            ]);
+        }
+
+        DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $ashley->id,
+            'date' => '2026-09-04',
+            'scheduled_work_day' => true,
+            'expected_seconds' => 21600,
+            'expected_ordinary_seconds' => 21600,
+            'expected_paid_seconds' => 21600,
+            'expected_hubstaff_seconds' => 21600,
+            'status' => 'revisado_supervisor',
+            'supervisor_comment' => 'Justificación con jornada incorrecta',
+        ]);
+
+        $exitCode = Artisan::call('payroll:apply-september-first-half-corrections', [
+            '--period' => $period->id,
+            '--apply' => true,
+        ]);
+
+        $this->assertSame(0, $exitCode, Artisan::output());
+
+        foreach ([$palmettoEmployee, $francisco, $ashley] as $employee) {
+            $this->assertDatabaseHas('hubstaff_time_entries', [
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'date' => '2026-09-05 00:00:00',
+                'active' => false,
+            ]);
+            $this->assertDatabaseHas('daily_time_reviews', [
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'date' => '2026-09-05 00:00:00',
+                'hubstaff_total_seconds' => 0,
+                'payable_seconds' => 0,
+                'paid_day_off' => false,
+                'justified_absence_seconds' => 0,
+                'status' => 'pendiente',
+            ]);
+        }
+
+        $this->assertDatabaseHas('hubstaff_time_entries', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $outside->id,
+            'date' => '2026-09-05 00:00:00',
+            'active' => true,
+        ]);
+        $this->assertDatabaseHas('employees', [
+            'id' => $ashley->id,
+            'daily_hours' => 8,
+        ]);
+        $this->assertDatabaseHas('daily_time_reviews', [
+            'payroll_period_id' => $period->id,
+            'employee_id' => $ashley->id,
+            'date' => '2026-09-04 00:00:00',
+            'expected_ordinary_seconds' => 28800,
+            'status' => 'pendiente',
+            'supervisor_comment' => null,
+        ]);
+
+        foreach ([$jonathan, $orely] as $employee) {
+            $this->assertSame(0, HubstaffTimeEntry::query()
+                ->where('payroll_period_id', $period->id)
+                ->where('employee_id', $employee->id)
+                ->where('active', true)
+                ->count());
+            $this->assertDatabaseHas('payroll_results', [
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'lost_time_seconds' => 0,
+            ]);
+        }
+    }
+
     public function test_edwin_cruz_training_hours_command_recalculates_only_the_target_employee_case(): void
     {
         $period = PayrollPeriod::query()->create([

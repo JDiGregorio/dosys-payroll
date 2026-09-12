@@ -137,6 +137,72 @@ El comando excluye empleados de 40 horas, asigna la plantilla 36h correcta por
 empleado y recalcula preservando justificaciones, comentarios, bonos,
 deducciones, estados y aprobaciones.
 
+## Importar tiempos desde Trackabi
+
+La integración inicial de Trackabi está limitada a la campaña **Palmetto** y a
+los 14 correos configurados en `config/trackabi.php`. El importador usa email
+como llave principal y, si el email no coincide, intenta resolver el empleado
+por nombre dentro de Palmetto.
+
+Variables mínimas:
+
+```env
+TRACKABI_ENABLED=true
+TRACKABI_PROVIDER=mindcloud
+TRACKABI_API_BASE_URL=https://connect.mindcloud.co/v1/universal/trackabi/latest
+MINDCLOUD_API_KEY=
+TRACKABI_CONNECTION_ID=
+TRACKABI_LIST_TIME_ENTRIES_PATH=/actions/list-time-entries
+TRACKABI_DEFAULT_PROJECT_NAME=Palmetto
+TRACKABI_PALMETTO_PROJECT_ID=75415
+TRACKABI_FILTER_BY_PROJECT_ID=false
+TRACKABI_IMPORT_FROM_DATE=2026-08-26
+TRACKABI_IMPORT_TO_DATE=2026-09-10
+TRACKABI_FILTER_DATES_LOCALLY=true
+TRACKABI_IMPORT_LIMIT=100
+TRACKABI_IMPORT_MAX_PAGES=100
+TRACKABI_CONFLICT_STRATEGY=manual_review_on_overlap
+```
+
+`MINDCLOUD_API_KEY` es el nombre preferido para la llave de MindCloud. Si no
+existe, el sistema usa `TRACKABI_API_TOKEN` como fallback.
+
+MindCloud v1 para Trackabi no acepta correctamente `startDate`/`endDate` en
+`list-time-entries` según las pruebas realizadas. Además, algunos registros de
+Palmetto llegan sin `project.id`. Por eso el importador trae los registros sin
+filtrar por proyecto de forma predeterminada y filtra localmente usando la lista
+blanca de correos Palmetto y `dateLogged`. Si se desea forzar el filtro por
+proyecto, activa `TRACKABI_FILTER_BY_PROJECT_ID=true`.
+
+Ejemplo de `curl` funcional:
+
+```bash
+curl -G "https://connect.mindcloud.co/v1/universal/trackabi/latest/actions/list-time-entries" \
+  -H "Authorization: Bearer $MINDCLOUD_API_KEY" \
+  --data-urlencode "connectionId=$TRACKABI_CONNECTION_ID" \
+  --data-urlencode "limit=10" \
+  --data-urlencode "offset=0" \
+  --data-urlencode "fields=id,dateLogged,loggedTime,member.email,member.firstName,member.lastName,project.id,project.name,startTime,endTime,timeType"
+```
+
+Vista previa para la quincena del 26 de agosto al 10 de septiembre:
+
+```bash
+./vendor/bin/sail artisan trackabi:import --campaign=Palmetto --from=2026-08-26 --to=2026-09-10 --dry-run
+```
+
+Aplicar importación:
+
+```bash
+./vendor/bin/sail artisan trackabi:import --campaign=Palmetto --from=2026-08-26 --to=2026-09-10 --commit
+```
+
+El importador no modifica revisiones ya marcadas como revisadas, aprobadas o
+bloqueadas. Si hay Trackabi y Hubstaff para el mismo empleado/fecha, no se suma
+doble: Trackabi se guarda inactivo para auditoría y el conflicto queda para
+revisión manual. Los datos de actividad/productividad no se aplican al cálculo
+porque el endpoint actual no los devuelve.
+
 ## Validación de planilla
 
 Antes de cerrar un período:

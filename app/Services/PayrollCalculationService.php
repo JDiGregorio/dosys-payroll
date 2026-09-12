@@ -308,6 +308,7 @@ class PayrollCalculationService
         DB::transaction(function () use ($period): void {
             app(JulySecondHalfPayrollCorrectionsService::class)->applyForPeriod($period);
             app(AugustSecondHalfPayrollCorrectionsService::class)->applyForPeriod($period);
+            app(SeptemberFirstHalfPayrollCorrectionsService::class)->applyForPeriod($period);
 
             $manualReviewState = $this->manualReviewState($period);
             $bonusState = $period->payrollBonuses()->orderBy('id')->get()->map->getAttributes()->all();
@@ -348,6 +349,7 @@ class PayrollCalculationService
         DB::transaction(function () use ($period, $employee): void {
             app(JulySecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
             app(AugustSecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
+            app(SeptemberFirstHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
 
             $manualReviewState = $this->manualReviewState($period, $employee);
             $entriesByEmployeeDate = HubstaffTimeEntry::query()
@@ -861,6 +863,7 @@ class PayrollCalculationService
     {
         app(JulySecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
         app(AugustSecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
+        app(SeptemberFirstHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
     }
 
     private function weekKey(Carbon $date): string

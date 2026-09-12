@@ -10,7 +10,9 @@ use App\Services\JulySecondHalfPayrollCorrectionsService;
 use App\Services\PalmettoDebtCollectionsScheduleCorrectionService;
 use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
+use App\Services\SeptemberFirstHalfPayrollCorrectionsService;
 use App\Services\TimeParserService;
+use App\Services\Trackabi\TrackabiImportService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -55,6 +57,153 @@ Artisan::command(
         return self::SUCCESS;
     },
 )->purpose('Recalcula un período sin sobrescribir información manual.');
+
+Artisan::command(
+    'trackabi:import {--period= : ID del período de planilla} {--campaign=Palmetto : Campaña/proyecto de Trackabi} {--from= : Fecha inicial YYYY-MM-DD} {--to= : Fecha final YYYY-MM-DD} {--dry-run : Solo muestra vista previa} {--commit : Guarda los registros y recalcula empleados afectados} {--prefer-trackabi-on-conflict : En overlaps Hubstaff/Trackabi, usa Trackabi y desactiva Hubstaff} {--estimate-palmetto-real-time : Capa Trackabi al horario esperado y descuenta pérdida histórica estimada} {--estimated-loss-max-minutes=15 : Límite máximo de pérdida histórica por día}',
+    function (TrackabiImportService $service, TimeParserService $parser): int {
+        $campaign = (string) $this->option('campaign');
+        $fromOption = $this->option('from') ?: config('trackabi.import_from_date');
+        $toOption = $this->option('to') ?: config('trackabi.import_to_date');
+
+        if ($this->option('prefer-trackabi-on-conflict')) {
+            config(['trackabi.conflict_strategy' => 'trackabi_wins_after_cutoff']);
+        }
+
+        if ($this->option('estimate-palmetto-real-time')) {
+            config([
+                'trackabi.estimate_real_time' => true,
+                'trackabi.estimated_loss_max_minutes' => (int) $this->option('estimated-loss-max-minutes'),
+            ]);
+        }
+
+        if (! $fromOption || ! $toOption) {
+            $this->error('Debes indicar --from=YYYY-MM-DD y --to=YYYY-MM-DD.');
+
+            return self::FAILURE;
+        }
+
+        if ($campaign !== 'Palmetto') {
+            $this->error('Por seguridad, esta primera integración Trackabi solo permite --campaign=Palmetto.');
+
+            return self::FAILURE;
+        }
+
+        if ((bool) $this->option('dry-run') === (bool) $this->option('commit')) {
+            $this->error('Debes indicar exactamente una opción: --dry-run o --commit.');
+
+            return self::FAILURE;
+        }
+
+        $from = Carbon::parse((string) $fromOption)->startOfDay();
+        $to = Carbon::parse((string) $toOption)->startOfDay();
+        $period = $this->option('period')
+            ? PayrollPeriod::query()->find((int) $this->option('period'))
+            : PayrollPeriod::query()
+                ->whereDate('starts_at', '<=', $from)
+                ->whereDate('ends_at', '>=', $to)
+                ->latest('starts_at')
+                ->first();
+
+        if (! $period) {
+            $this->error('No existe un período que contenga el rango indicado.');
+
+            return self::FAILURE;
+        }
+
+        if ($period->status === 'cerrado') {
+            $this->error('El período está cerrado y no será modificado.');
+
+            return self::FAILURE;
+        }
+
+        try {
+            $plan = $this->option('commit')
+                ? $service->import($period, $campaign, $from, $to)
+                : $service->preview($period, $campaign, $from, $to);
+        } catch (Throwable $exception) {
+            $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        }
+
+        $this->info(sprintf(
+            'Trackabi %s para %s, período #%s, %s a %s',
+            $this->option('commit') ? 'importado' : 'vista previa',
+            $plan['campaign'],
+            $plan['period_id'],
+            $plan['from'],
+            $plan['to'],
+        ));
+        $this->line('Registros API: '.$plan['raw_entries']);
+        $this->line('Registros después de filtrar fechas localmente: '.$plan['date_filtered_entries']);
+        $this->line('Registros con loggedTime null: '.$plan['logged_time_null_entries']);
+        $this->line('Registros válidos Palmetto: '.$plan['normalized_entries']);
+        $this->line('Registros mapeados: '.$plan['mapped_entries']);
+        $this->line('Empleados encontrados: '.$plan['employees_found']);
+        $this->line('Días empleado encontrados: '.$plan['days_found']);
+        $this->line('Total Trackabi bruto: '.$parser->secondsToHourMinute((int) $plan['raw_tracked_seconds']));
+        $this->line('Total luego de cap por horario: '.$parser->secondsToHourMinute((int) $plan['capped_seconds']));
+        $this->line('Crédito almuerzo/break aplicado: '.$parser->secondsToHourMinute((int) $plan['break_credit_seconds']));
+        $this->line('Pérdida histórica estimada aplicada: '.$parser->secondsToHourMinute((int) $plan['estimated_loss_seconds']));
+        $this->line('Total Trackabi aplicado: '.$parser->secondsToHourMinute((int) $plan['total_tracked_seconds']));
+        $this->line('Total productivo: '.($plan['total_productive_seconds'] === null
+            ? 'No enviado por Trackabi'
+            : $parser->secondsToHourMinute((int) $plan['total_productive_seconds'])));
+
+        if ($plan['totals_by_employee'] !== []) {
+            $this->info('Total por empleado:');
+            $this->table(['Empleado', 'Días', 'Bruto', 'Ajustado', 'Break', 'Pérdida'], collect($plan['totals_by_employee'])->map(fn (array $row): array => [
+                $row['employee_name'],
+                $row['days'],
+                $parser->secondsToHourMinute((int) $row['raw_tracked_seconds']),
+                $parser->secondsToHourMinute((int) $row['tracked_seconds']),
+                $parser->secondsToHourMinute((int) $row['break_credit_seconds']),
+                $parser->secondsToHourMinute((int) $row['estimated_loss_seconds']),
+            ])->all());
+        }
+
+        if ($plan['unmapped'] !== []) {
+            $this->warn('Empleados sin mapeo:');
+            $this->table(['Email', 'Nombre', 'Fecha'], collect($plan['unmapped'])->map(fn (array $row): array => [
+                $row['email'] ?? '',
+                $row['name'] ?? '',
+                $row['date'] ?? '',
+            ])->all());
+        }
+
+        if ($plan['conflicts'] !== []) {
+            $this->warn('Conflictos Hubstaff/Trackabi detectados:');
+            $this->table(['Empleado', 'Fecha', 'Trackabi'], collect($plan['conflicts'])->map(fn (array $row): array => [
+                $row['employee_name'],
+                $row['date'],
+                $parser->secondsToHourMinute((int) $row['tracked_seconds']),
+            ])->all());
+        }
+
+        if ($plan['protected_reviews'] !== []) {
+            $this->warn('Revisiones ya revisadas/aprobadas que NO se modificarán:');
+            $this->table(['Empleado', 'Fecha', 'Trackabi'], collect($plan['protected_reviews'])->map(fn (array $row): array => [
+                $row['employee_name'],
+                $row['date'],
+                $parser->secondsToHourMinute((int) $row['tracked_seconds']),
+            ])->all());
+        }
+
+        if ($plan['manual_reviews'] !== []) {
+            $this->warn('Días marcados para revisión manual por activity score bajo/medio: '.count($plan['manual_reviews']));
+        }
+
+        if ($this->option('commit')) {
+            $this->info('Registros Trackabi creados: '.$plan['created_entries']);
+            $this->info('Empleados recalculados: '.count($plan['affected_employees']));
+        } else {
+            $this->info('Días empleado que se crearían/actualizarían: '.count($plan['importable_reviews']));
+            $this->line('Ejecuta el mismo comando con --commit para guardar.');
+        }
+
+        return self::SUCCESS;
+    },
+)->purpose('Importa tiempos de Trackabi para Palmetto sin tocar otras campañas.');
 
 Artisan::command(
     'payroll:reconcile-justified-idle {--period= : ID del período de planilla} {--employee= : ID del empleado; opcional} {--include-pending : Incluye revisiones pendientes, útil para correcciones puntuales} {--apply : Aplica el ajuste; sin esta opción solo muestra vista previa}',
@@ -364,6 +513,60 @@ Artisan::command(
         return self::SUCCESS;
     },
 )->purpose('Aplica ajustes puntuales de Victor, Marco, Bradarick y Delmark para la segunda quincena de agosto 2026.');
+
+Artisan::command(
+    'payroll:apply-september-first-half-corrections {--period=8 : ID del período de planilla} {--apply : Aplica el ajuste; sin esta opción solo muestra vista previa}',
+    function (SeptemberFirstHalfPayrollCorrectionsService $service, TimeParserService $parser): int {
+        $period = PayrollPeriod::query()->find((int) $this->option('period'));
+
+        if (! $period) {
+            $this->error('Debes indicar un período válido con --period=ID.');
+
+            return self::FAILURE;
+        }
+
+        try {
+            $result = $this->option('apply')
+                ? $service->apply($period)
+                : $service->preview($period);
+        } catch (Throwable $exception) {
+            $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        }
+
+        $this->info("Período: {$period->name} ({$period->id})");
+        $this->table(
+            ['ID', 'Empleado', 'Acción', 'Antes', 'Después'],
+            collect($result['actions'])->map(fn (array $row): array => [
+                $row['employee_id'],
+                $row['employee'],
+                $row['action'],
+                $row['before'],
+                $row['after'],
+            ])->all(),
+        );
+
+        if ($result['outside_saturday_entries'] !== []) {
+            $this->warn('Registros activos del sábado 5 fuera de la lista indicada:');
+            $this->table(
+                ['ID', 'Empleado', 'Campaña', 'Horas'],
+                collect($result['outside_saturday_entries'])->map(fn (array $row): array => [
+                    $row['employee_id'],
+                    $row['employee'],
+                    $row['campaign'],
+                    $parser->secondsToHourMinute((int) $row['seconds']),
+                ])->all(),
+            );
+        }
+
+        $this->info($this->option('apply')
+            ? 'Ajustes aplicados y planilla de empleados afectados recalculada.'
+            : 'Vista previa únicamente. Agrega --apply para ejecutar el ajuste.');
+
+        return self::SUCCESS;
+    },
+)->purpose('Aplica ajustes puntuales de sábado 5, Ashley y administrativos para 26 agosto - 10 septiembre 2026.');
 
 Artisan::command(
     'payroll:apply-employee-schedule-transition {--period= : ID del período de planilla} {--employee=Elalf Shamir Dominguez Pineda : Nombre exacto o prefijo del empleado} {--rotative-start=2026-06-11 : Primera fecha bajo jornada rotativa} {--rotative-end=2026-06-13 : Última fecha bajo jornada rotativa} {--diurnal-start=2026-06-14 : Primera fecha bajo jornada diurna} {--apply : Aplica la transición; sin esta opción solo muestra vista previa}',

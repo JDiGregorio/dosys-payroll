@@ -13,6 +13,14 @@ class HubstaffTimeEntry extends Model
     {
         return [
             'date' => 'date',
+            'source_started_at' => 'datetime',
+            'source_ended_at' => 'datetime',
+            'billable_seconds' => 'integer',
+            'productive_seconds' => 'integer',
+            'unproductive_seconds' => 'integer',
+            'activity_score' => 'decimal:2',
+            'adjusted_payable_seconds' => 'integer',
+            'requires_manual_review' => 'boolean',
             'activity_percentage' => 'decimal:2',
             'idle_percentage' => 'decimal:2',
             'total_spent' => 'decimal:2',

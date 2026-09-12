@@ -271,6 +271,7 @@
     use App\Filament\Resources\DailyTimeReviews\DailyTimeReviewResource;
     use App\Models\DailyTimeReview;
     use App\Services\TimeParserService;
+    use App\Support\TimeTrackingSource;
     use Carbon\CarbonInterface;
     use Carbon\CarbonPeriod;
 
@@ -293,6 +294,7 @@
         : collect();
 
     $statusLabel = fn (?DailyTimeReview $review): string => DailyTimeReviewResource::displayStatusLabel($review);
+    $timeTrackingLabel = TimeTrackingSource::labelForEmployee($employee);
 @endphp
 
 <div class="dr-page">
@@ -381,7 +383,7 @@
                                             </div>
                                         @else
                                             <div class="dr-event-row">
-                                                <span>Hubstaff</span>
+                                                <span>{{ $timeTrackingLabel }}</span>
                                                 <strong>{{ $timeParser->secondsToHourMinute($review->hubstaff_total_seconds) }} h</strong>
                                             </div>
                                             <div class="dr-event-row">

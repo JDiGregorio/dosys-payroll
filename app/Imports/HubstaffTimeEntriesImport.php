@@ -51,6 +51,7 @@ class HubstaffTimeEntriesImport implements ToCollection, WithHeadingRow
                 HubstaffTimeEntry::query()->create([
                     'payroll_period_id' => $this->period->id,
                     'hubstaff_import_id' => $this->hubstaffImport?->id,
+                    'source_provider' => 'hubstaff_csv',
                     'employee_id' => $this->resolveEmployeeId($member),
                     'hubstaff_member' => $member,
                     'date' => $date,

@@ -8,6 +8,7 @@ use App\Filament\Resources\DailyTimeReviews\Pages\ListDailyTimeReviews;
 use App\Models\DailyTimeReview;
 use App\Services\PayrollCalculationService;
 use App\Services\TimeParserService;
+use App\Support\TimeTrackingSource;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
@@ -103,18 +104,18 @@ class DailyTimeReviewResource extends Resource
                                 ->disabled(),
                             DatePicker::make('date')->label('Fecha')->required()->disabled(),
                             TextInput::make('expected_hours')->label('Horas ordinarias esperadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->expected_ordinary_seconds) : '0:00:00')),
-                            TextInput::make('expected_hubstaff_hours')->label('Horas esperadas Hubstaff')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->expected_hubstaff_seconds) : '0:00:00')),
+                            TextInput::make('expected_hubstaff_hours')->label(fn (?DailyTimeReview $record): string => 'Horas esperadas '.self::timeTrackingLabel($record))->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->expected_hubstaff_seconds) : '0:00:00')),
                             TextInput::make('expected_paid_hours')->label('Horas pagadas esperadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->expected_paid_seconds) : '0:00:00')),
                             TextInput::make('paid_time_not_tracked_hours')->label('Tiempo pagado no trackeado')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->paid_time_not_tracked_seconds) : '0:00:00')),
                             TextInput::make('assigned_overtime_hours')->label('Horas extra preasignadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond((int) $record->preassigned_overtime_seconds) : '0:00:00')),
                             TextInput::make('additional_overtime_hours')->label('Horas extra adicionales')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond((int) $record->additional_overtime_seconds) : '0:00:00')),
                             TextInput::make('required_hours')->label('Total requerido')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond(self::requiredSeconds($record)) : '0:00:00')),
-                            TextInput::make('hubstaff_total_hours')->label('Total horas Hubstaff')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_total_seconds) : '0:00:00')),
-                            TextInput::make('hubstaff_idle_hours')->label('Idle reportado por Hubstaff')->helperText('Es un dato independiente enviado por Hubstaff; no representa necesariamente la diferencia contra las horas requeridas.')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_idle_seconds) : '0:00:00')),
+                            TextInput::make('hubstaff_total_hours')->label(fn (?DailyTimeReview $record): string => 'Total horas '.self::timeTrackingLabel($record))->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_total_seconds) : '0:00:00')),
+                            TextInput::make('hubstaff_idle_hours')->label(fn (?DailyTimeReview $record): string => 'Idle reportado por '.self::timeTrackingLabel($record))->helperText(fn (?DailyTimeReview $record): string => 'Es un dato independiente enviado por '.self::timeTrackingLabel($record).'; no representa necesariamente la diferencia contra las horas requeridas.')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_idle_seconds) : '0:00:00')),
                             TextInput::make('lost_time_hours')->label('Tiempo no trabajado')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond(self::lostTimeSeconds($record)) : '0:00:00')),
                             TextInput::make('justified_lost_time_hours')
                                 ->label('Tiempo justificado')
-                                ->helperText('Formato HH:MM. Se suma al tiempo de Hubstaff hasta completar el total requerido.')
+                                ->helperText(fn (?DailyTimeReview $record): string => 'Formato HH:MM. Se suma al tiempo de '.self::timeTrackingLabel($record).' hasta completar el total requerido.')
                                 ->placeholder('00:00')
                                 ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
                                 ->rules(['regex:/^\d{1,3}:[0-5]\d$/'])
@@ -133,7 +134,7 @@ class DailyTimeReviewResource extends Resource
                             Textarea::make('supervisor_comment')->label('Comentario supervisor')->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->columnSpanFull(),
                             Textarea::make('rrhh_comment')->label('Comentario RRHH')->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->visible(fn () => auth()->user()?->isRrhh())->columnSpanFull(),
                         ]),
-                    Tab::make('Registros de Hubstaff')
+                    Tab::make(fn (?DailyTimeReview $record): string => 'Registros de '.self::timeTrackingLabel($record))
                         ->columns(1)
                         ->schema([
                             View::make('filament.resources.daily-time-reviews.hubstaff-entries')
@@ -211,6 +212,15 @@ class DailyTimeReviewResource extends Resource
             ->label($label)
             ->state(fn (DailyTimeReview $record) => app(TimeParserService::class)->secondsToDecimalHours($record->{$name}))
             ->alignRight();
+    }
+
+    public static function timeTrackingLabel(?DailyTimeReview $record): string
+    {
+        $employee = $record?->relationLoaded('employee')
+            ? $record->employee
+            : $record?->employee()->with('campaign')->first();
+
+        return TimeTrackingSource::labelForEmployee($employee);
     }
 
     public static function hourStates(DailyTimeReview $record): array
