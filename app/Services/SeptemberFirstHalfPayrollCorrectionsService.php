@@ -64,6 +64,12 @@ class SeptemberFirstHalfPayrollCorrectionsService
 
     private const ASHLEY_NAME = 'Ashley Escobar';
 
+    private const VICTOR_NAME = 'Victor Vasquez';
+
+    private const MARCO_NAME = 'Marco Lara';
+
+    private const MELANY_NAME = 'Melany Martinez';
+
     private const ADMIN_NAMES = [
         'Jonathan Garcia',
         'Orely Ramirez',
@@ -71,7 +77,52 @@ class SeptemberFirstHalfPayrollCorrectionsService
 
     private const SATURDAY_COMMENT = 'Ajuste puntual septiembre 2026: sábado 5 no trabajado, tiempo importado fuera del cálculo.';
 
+    private const PALMETTO_SATURDAY_OFF_COMMENT = 'Ajuste puntual septiembre 2026: Palmetto no trabajó el sábado 5; día marcado como OFF.';
+
+    private const MARCO_REPLACEMENT_OFF_COMMENT = 'Ajuste puntual septiembre 2026: tiempo de reposición removido; día marcado como OFF.';
+
     private const ADMIN_COMMENT = 'Ajuste administrativo: empleado sin tracker, quincena pagada completa.';
+
+    /**
+     * @var array<string, array{tracked: int, paid_not_tracked?: int}>
+     */
+    private const VICTOR_DAILY_TARGETS = [
+        '2026-08-26' => ['tracked' => 36000],
+        '2026-08-27' => ['tracked' => 36000],
+        '2026-08-28' => ['tracked' => 36000],
+        '2026-08-31' => ['tracked' => 36000],
+        '2026-09-01' => ['tracked' => 36000],
+        '2026-09-02' => ['tracked' => 36000],
+        '2026-09-03' => ['tracked' => 36000],
+        '2026-09-04' => ['tracked' => 35880],
+        '2026-09-08' => ['tracked' => 36000],
+        '2026-09-09' => ['tracked' => 36000],
+        '2026-09-10' => ['tracked' => 35940],
+    ];
+
+    /**
+     * @var array<string, array{tracked: int, paid_not_tracked?: int}>
+     */
+    private const MARCO_DAILY_TARGETS = [
+        '2026-08-26' => ['tracked' => 29580, 'paid_not_tracked' => 4500],
+        '2026-08-27' => ['tracked' => 33720],
+        '2026-08-28' => ['tracked' => 29220, 'paid_not_tracked' => 4500],
+        '2026-08-31' => ['tracked' => 35760],
+        '2026-09-01' => ['tracked' => 28860, 'paid_not_tracked' => 4500],
+        '2026-09-02' => ['tracked' => 64920, 'paid_not_tracked' => 4500],
+        '2026-09-03' => ['tracked' => 32400, 'paid_not_tracked' => 3600],
+        '2026-09-04' => ['tracked' => 29280, 'paid_not_tracked' => 4500],
+        '2026-09-08' => ['tracked' => 29820, 'paid_not_tracked' => 4500],
+        '2026-09-09' => ['tracked' => 28920, 'paid_not_tracked' => 4500],
+        '2026-09-10' => ['tracked' => 28800, 'paid_not_tracked' => 4500],
+    ];
+
+    private const MARCO_REPLACEMENT_OFF_DATES = [
+        '2026-08-30',
+        '2026-09-06',
+    ];
+
+    private const MELANY_LAST_WORK_DATE = '2026-09-02';
 
     public function __construct(
         private readonly PayrollCalculationService $payrollCalculationService,
@@ -89,12 +140,49 @@ class SeptemberFirstHalfPayrollCorrectionsService
         $saturdayEmployees = $this->saturdayNoWorkEmployees();
 
         foreach ($saturdayEmployees as $employee) {
+            $isPalmetto = $this->isPalmettoEmployee($employee);
             $rows[] = [
                 'employee_id' => $employee->id,
                 'employee' => $employee->name,
                 'action' => 'Remover tiempo sábado 5',
                 'before' => $this->reviewSummary($this->review($period, $employee, self::SATURDAY_DATE)),
-                'after' => 'Sin horas activas, sin OFF, no pagado salvo revisión posterior.',
+                'after' => $isPalmetto
+                    ? 'Sin horas activas, OFF pagado por día libre de Palmetto.'
+                    : 'Sin horas activas, sin OFF, no pagado salvo revisión posterior.',
+            ];
+        }
+
+        foreach ([self::VICTOR_NAME => self::VICTOR_DAILY_TARGETS, self::MARCO_NAME => self::MARCO_DAILY_TARGETS] as $name => $targets) {
+            if (! $employee = $this->employeeByName($name)) {
+                continue;
+            }
+
+            $rows[] = [
+                'employee_id' => $employee->id,
+                'employee' => $employee->name,
+                'action' => $name.': horas Trackabi ajustadas',
+                'before' => 'Revisiones actuales del período',
+                'after' => count($targets).' días corregidos a 8h ordinarias + 2h extra diaria.',
+            ];
+        }
+
+        if ($marco = $this->employeeByName(self::MARCO_NAME)) {
+            $rows[] = [
+                'employee_id' => $marco->id,
+                'employee' => $marco->name,
+                'action' => 'Marco: domingos de reposición',
+                'before' => 'Tiempo activo en 30 agosto / 6 septiembre si existe',
+                'after' => 'Registros desactivados y días marcados OFF.',
+            ];
+        }
+
+        if ($melany = $this->employeeByName(self::MELANY_NAME)) {
+            $rows[] = [
+                'employee_id' => $melany->id,
+                'employee' => $melany->name,
+                'action' => 'Melany: fin de relación 2 septiembre',
+                'before' => 'Tiempo activo posterior al 2 septiembre si existe',
+                'after' => 'Registros posteriores desactivados y sin pago desde el 3 septiembre.',
             ];
         }
 
@@ -174,6 +262,13 @@ class SeptemberFirstHalfPayrollCorrectionsService
                 $affected->push($employee->id);
             }
 
+            foreach ([self::VICTOR_NAME, self::MARCO_NAME, self::MELANY_NAME] as $name) {
+                if ($employee = $this->employeeByName($name)) {
+                    $this->applyEmployeeSpecificCorrections($period, $employee);
+                    $affected->push($employee->id);
+                }
+            }
+
             Employee::query()
                 ->whereIn('id', $affected->unique()->values()->all())
                 ->whereNotIn('id', $regenerated->unique()->values()->all())
@@ -202,6 +297,12 @@ class SeptemberFirstHalfPayrollCorrectionsService
         if ($ashley = $this->employeeByName(self::ASHLEY_NAME)) {
             $this->applyAshleyHoursOnly($ashley);
         }
+
+        foreach ([self::VICTOR_NAME, self::MARCO_NAME, self::MELANY_NAME] as $name) {
+            if ($employee = $this->employeeByName($name)) {
+                $this->applyEmployeeSpecificCorrections($period, $employee);
+            }
+        }
     }
 
     public function applyForEmployee(PayrollPeriod $period, Employee $employee): bool
@@ -228,6 +329,10 @@ class SeptemberFirstHalfPayrollCorrectionsService
 
         if ($this->matchesName($employee, self::ASHLEY_NAME)) {
             $this->applyAshleyHoursOnly($employee);
+            $applied = true;
+        }
+
+        if ($this->applyEmployeeSpecificCorrections($period, $employee)) {
             $applied = true;
         }
 
@@ -267,10 +372,14 @@ class SeptemberFirstHalfPayrollCorrectionsService
         ]);
         $expectation = $this->scheduleExpectationService->forDate($employee, Carbon::parse(self::SATURDAY_DATE));
         $ordinarySeconds = (int) $expectation['expected_ordinary_seconds'];
-        $preservePaidDayOff = (bool) $review->paid_day_off;
+        $forcePaidDayOff = $this->isPalmettoEmployee($employee);
+        $preservePaidDayOff = (bool) $review->paid_day_off || $forcePaidDayOff;
         $payableSeconds = $preservePaidDayOff
             ? $this->paidDayOffSeconds($employee, $ordinarySeconds, (bool) $expectation['scheduled_work_day'], (string) $expectation['schedule_type'])
             : 0;
+        $comment = $forcePaidDayOff
+            ? $this->appendComment($review->supervisor_comment, self::PALMETTO_SATURDAY_OFF_COMMENT)
+            : ($preservePaidDayOff ? $review->supervisor_comment : self::SATURDAY_COMMENT);
 
         $review->fill([
             'scheduled_work_day' => (bool) $expectation['scheduled_work_day'],
@@ -301,10 +410,229 @@ class SeptemberFirstHalfPayrollCorrectionsService
             'approved_overtime_seconds' => 0,
             'payable_seconds' => $payableSeconds,
             'difference_seconds' => -$ordinarySeconds,
-            'status' => $preservePaidDayOff ? $review->status : 'pendiente',
-            'supervisor_comment' => $preservePaidDayOff ? $review->supervisor_comment : self::SATURDAY_COMMENT,
+            'status' => $preservePaidDayOff ? ($review->status ?: 'revisado_supervisor') : 'pendiente',
+            'supervisor_comment' => $comment,
         ]);
         $review->save();
+    }
+
+    private function applyEmployeeSpecificCorrections(PayrollPeriod $period, Employee $employee): bool
+    {
+        if ($this->matchesName($employee, self::VICTOR_NAME)) {
+            $this->applyTargetWorkdays($period, $employee, self::VICTOR_DAILY_TARGETS);
+
+            return true;
+        }
+
+        if ($this->matchesName($employee, self::MARCO_NAME)) {
+            $this->applyTargetWorkdays($period, $employee, self::MARCO_DAILY_TARGETS);
+
+            foreach (self::MARCO_REPLACEMENT_OFF_DATES as $date) {
+                $this->applyPaidOffDay($period, $employee, $date, self::MARCO_REPLACEMENT_OFF_COMMENT);
+            }
+
+            return true;
+        }
+
+        if ($this->matchesName($employee, self::MELANY_NAME)) {
+            $this->applyMelanyAfterLastWorkDate($period, $employee);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, array{tracked: int, paid_not_tracked?: int}>  $targets
+     */
+    private function applyTargetWorkdays(PayrollPeriod $period, Employee $employee, array $targets): void
+    {
+        foreach ($targets as $date => $target) {
+            $review = $this->review($period, $employee, $date) ?? new DailyTimeReview([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'date' => $date,
+            ]);
+
+            $this->applyTargetWorkday(
+                $review,
+                (int) $target['tracked'],
+                (int) ($target['paid_not_tracked'] ?? 0),
+            );
+        }
+    }
+
+    private function applyTargetWorkday(
+        DailyTimeReview $review,
+        int $trackedSeconds,
+        int $paidNotTrackedSeconds,
+    ): void {
+        $ordinarySeconds = $this->hoursToSeconds(8);
+        $overtimeSeconds = $this->hoursToSeconds(2);
+        $requiredSeconds = $ordinarySeconds + $overtimeSeconds;
+        $expectedHubstaffSeconds = max($requiredSeconds - $paidNotTrackedSeconds, 0);
+        $creditedSeconds = min(
+            $trackedSeconds + $paidNotTrackedSeconds + max((int) $review->justified_absence_seconds, 0),
+            $requiredSeconds,
+        );
+        $remainingLostSeconds = max($requiredSeconds - $trackedSeconds - $paidNotTrackedSeconds - max((int) $review->justified_absence_seconds, 0), 0);
+        $justifiedSeconds = min(max((int) $review->justified_absence_seconds, 0), max($requiredSeconds - $trackedSeconds - $paidNotTrackedSeconds, 0));
+
+        $review->fill([
+            'scheduled_work_day' => true,
+            'expected_seconds' => $ordinarySeconds,
+            'expected_ordinary_seconds' => $ordinarySeconds,
+            'assigned_overtime_seconds' => $overtimeSeconds,
+            'preassigned_overtime_seconds' => $overtimeSeconds,
+            'additional_overtime_seconds' => 0,
+            'assigned_overtime_fulfilled' => $creditedSeconds >= $requiredSeconds,
+            'expected_paid_seconds' => $requiredSeconds,
+            'expected_hubstaff_seconds' => $expectedHubstaffSeconds,
+            'hubstaff_total_seconds' => $trackedSeconds,
+            'hubstaff_regular_seconds' => $trackedSeconds,
+            'hubstaff_idle_seconds' => 0,
+            'activity_percentage' => null,
+            'idle_percentage' => null,
+            'pto_seconds' => 0,
+            'holiday_seconds' => 0,
+            'paid_day_off' => false,
+            'paid_break_seconds' => 0,
+            'paid_time_not_tracked_seconds' => $paidNotTrackedSeconds,
+            'pending_idle_seconds' => 0,
+            'justified_idle_seconds' => 0,
+            'unjustified_idle_seconds' => 0,
+            'justified_absence_seconds' => $justifiedSeconds,
+            'unjustified_absence_seconds' => $remainingLostSeconds,
+            'possible_overtime_seconds' => min($overtimeSeconds, max($trackedSeconds + $paidNotTrackedSeconds + $justifiedSeconds - $ordinarySeconds, 0)),
+            'approved_overtime_seconds' => 0,
+            'payable_seconds' => min($trackedSeconds + $paidNotTrackedSeconds + $justifiedSeconds, $requiredSeconds),
+            'difference_seconds' => $trackedSeconds - $expectedHubstaffSeconds,
+            'status' => $this->targetWorkdayStatus($review, $remainingLostSeconds),
+        ]);
+        $review->save();
+    }
+
+    private function targetWorkdayStatus(DailyTimeReview $review, int $remainingLostSeconds): string
+    {
+        if ($remainingLostSeconds <= 0) {
+            return $review->status ?: 'revisado_supervisor';
+        }
+
+        if (
+            $review->status === 'pendiente'
+            || blank($review->supervisor_comment)
+            || str_contains((string) $review->supervisor_comment, 'Ajuste puntual septiembre 2026')
+        ) {
+            return 'pendiente';
+        }
+
+        return $review->status ?: 'pendiente';
+    }
+
+    private function applyPaidOffDay(PayrollPeriod $period, Employee $employee, string $date, string $comment): void
+    {
+        HubstaffTimeEntry::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', $employee->id)
+            ->whereDate('date', $date)
+            ->where('active', true)
+            ->update(['active' => false]);
+
+        $review = $this->review($period, $employee, $date) ?? new DailyTimeReview([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => $date,
+        ]);
+        $ordinarySeconds = $this->hoursToSeconds(8);
+
+        $review->fill([
+            'scheduled_work_day' => true,
+            'expected_seconds' => $ordinarySeconds,
+            'expected_ordinary_seconds' => $ordinarySeconds,
+            'assigned_overtime_seconds' => 0,
+            'preassigned_overtime_seconds' => 0,
+            'additional_overtime_seconds' => 0,
+            'assigned_overtime_fulfilled' => false,
+            'expected_paid_seconds' => $ordinarySeconds,
+            'expected_hubstaff_seconds' => $ordinarySeconds,
+            'hubstaff_total_seconds' => 0,
+            'hubstaff_regular_seconds' => 0,
+            'hubstaff_idle_seconds' => 0,
+            'activity_percentage' => null,
+            'idle_percentage' => null,
+            'pto_seconds' => 0,
+            'holiday_seconds' => 0,
+            'paid_day_off' => true,
+            'paid_break_seconds' => 0,
+            'paid_time_not_tracked_seconds' => 0,
+            'pending_idle_seconds' => 0,
+            'justified_idle_seconds' => 0,
+            'unjustified_idle_seconds' => 0,
+            'justified_absence_seconds' => 0,
+            'unjustified_absence_seconds' => 0,
+            'possible_overtime_seconds' => 0,
+            'approved_overtime_seconds' => 0,
+            'payable_seconds' => $ordinarySeconds,
+            'difference_seconds' => -$ordinarySeconds,
+            'status' => 'revisado_supervisor',
+            'supervisor_comment' => $this->appendComment($review->supervisor_comment, $comment),
+        ]);
+        $review->save();
+    }
+
+    private function applyMelanyAfterLastWorkDate(PayrollPeriod $period, Employee $employee): void
+    {
+        HubstaffTimeEntry::query()
+            ->where('payroll_period_id', $period->id)
+            ->where('employee_id', $employee->id)
+            ->whereDate('date', '>', self::MELANY_LAST_WORK_DATE)
+            ->where('active', true)
+            ->update(['active' => false]);
+
+        foreach (CarbonPeriod::create(Carbon::parse(self::MELANY_LAST_WORK_DATE)->addDay(), $period->ends_at) as $date) {
+            $dateString = $date->toDateString();
+            $review = $this->review($period, $employee, $dateString) ?? new DailyTimeReview([
+                'payroll_period_id' => $period->id,
+                'employee_id' => $employee->id,
+                'date' => $dateString,
+            ]);
+            $expectation = $this->scheduleExpectationService->forDate($employee, Carbon::parse($dateString));
+            $ordinarySeconds = (int) $expectation['expected_ordinary_seconds'];
+
+            $review->fill([
+                'scheduled_work_day' => (bool) $expectation['scheduled_work_day'],
+                'expected_seconds' => $ordinarySeconds,
+                'expected_ordinary_seconds' => $ordinarySeconds,
+                'assigned_overtime_seconds' => 0,
+                'preassigned_overtime_seconds' => 0,
+                'additional_overtime_seconds' => 0,
+                'assigned_overtime_fulfilled' => false,
+                'expected_paid_seconds' => $ordinarySeconds,
+                'expected_hubstaff_seconds' => $ordinarySeconds,
+                'hubstaff_total_seconds' => 0,
+                'hubstaff_regular_seconds' => 0,
+                'hubstaff_idle_seconds' => 0,
+                'activity_percentage' => null,
+                'idle_percentage' => null,
+                'pto_seconds' => 0,
+                'holiday_seconds' => 0,
+                'paid_day_off' => false,
+                'paid_break_seconds' => 0,
+                'paid_time_not_tracked_seconds' => 0,
+                'pending_idle_seconds' => 0,
+                'justified_idle_seconds' => 0,
+                'unjustified_idle_seconds' => 0,
+                'justified_absence_seconds' => 0,
+                'unjustified_absence_seconds' => $ordinarySeconds,
+                'possible_overtime_seconds' => 0,
+                'approved_overtime_seconds' => 0,
+                'payable_seconds' => 0,
+                'difference_seconds' => -$ordinarySeconds,
+                'status' => $review->status ?: 'revisado_supervisor',
+            ]);
+            $review->save();
+        }
     }
 
     private function paidDayOffSeconds(Employee $employee, int $ordinarySeconds, bool $scheduledWorkDay, string $scheduleType): int
@@ -474,7 +802,12 @@ class SeptemberFirstHalfPayrollCorrectionsService
     private function isSaturdayNoWorkEmployee(Employee $employee): bool
     {
         return $this->matchesAnyName($employee, self::SATURDAY_NO_WORK_NAMES)
-            || strtolower((string) $employee->campaign?->name) === 'palmetto'
+            || $this->isPalmettoEmployee($employee);
+    }
+
+    private function isPalmettoEmployee(Employee $employee): bool
+    {
+        return strtolower((string) $employee->campaign?->name) === 'palmetto'
             || strtolower((string) $employee->campaign()->value('name')) === 'palmetto';
     }
 
@@ -597,6 +930,21 @@ class SeptemberFirstHalfPayrollCorrectionsService
     private function hoursToSeconds(float $hours): int
     {
         return max((int) round($hours * 3600), 0);
+    }
+
+    private function appendComment(?string $current, string $comment): string
+    {
+        $current = trim((string) $current);
+
+        if ($current === '') {
+            return $comment;
+        }
+
+        if (str_contains($current, $comment)) {
+            return $current;
+        }
+
+        return $current."\n".$comment;
     }
 
     private function normalizeName(string $name): string
