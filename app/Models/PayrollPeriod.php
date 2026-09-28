@@ -14,6 +14,7 @@ class PayrollPeriod extends Model
     protected function casts(): array
     {
         return [
+            'limit_payable_to_schedule' => 'boolean',
             'starts_at' => 'date',
             'ends_at' => 'date',
             'apply_deductions' => 'boolean',

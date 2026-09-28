@@ -21,6 +21,35 @@ class HubstaffImportTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_all_campaigns_import_counts_full_logged_time_and_preserves_reviewed_entries(): void
+    {
+        config(['trackabi.enabled' => true, 'trackabi.api_base_url' => 'https://trackabi.test',
+            'trackabi.api_token' => 'test', 'trackabi.estimate_real_time' => false]);
+        $period = PayrollPeriod::query()->create(['name' => 'September',
+            'starts_at' => '2026-09-11', 'ends_at' => '2026-09-25']);
+        $rows = [];
+        foreach (['Palmetto', 'RRD FINANCIAL'] as $index => $name) {
+            $campaign = Campaign::query()->create(['name' => $name]);
+            $employee = Employee::query()->create(['name' => 'Agent '.$index,
+                'email' => "agent{$index}@example.com", 'campaign_id' => $campaign->id,
+                'daily_hours' => 8, 'hourly_rate' => 10, 'active' => true]);
+            $rows[] = ['id' => $index + 1, 'member' => ['email' => $employee->email],
+                'dateLogged' => '2026-09-11', 'loggedTime' => '08:00:00',
+                'productiveTime' => '06:00:00', 'unproductiveTime' => '02:00:00'];
+        }
+        Http::fake(['https://trackabi.test/*' => Http::response(['success' => true, 'data' => $rows])]);
+        $command = "trackabi:import --period={$period->id} --campaign=all --from=2026-09-11 --to=2026-09-25";
+        $this->artisan($command.' --dry-run')->expectsOutputToContain('Empleados encontrados: 2')->assertSuccessful();
+        $this->assertDatabaseCount('hubstaff_time_entries', 0);
+        $this->artisan($command.' --commit')->assertSuccessful();
+        $this->assertSame(57600, (int) HubstaffTimeEntry::where('active', true)->sum('total_seconds'));
+        Http::assertSent(fn (Request $request) => ! isset($request['projectId']) && ! isset($request['startDate']));
+        DailyTimeReview::where('payroll_period_id', $period->id)->update(['status' => 'aprobado_rrhh']);
+        $this->artisan($command.' --commit')->assertSuccessful();
+        $this->assertDatabaseCount('hubstaff_time_entries', 2);
+        $this->assertSame(57600, (int) HubstaffTimeEntry::where('active', true)->sum('total_seconds'));
+    }
+
     public function test_trackabi_normalizer_converts_hours_to_seconds(): void
     {
         config([
@@ -311,7 +340,7 @@ class HubstaffImportTest extends TestCase
         ]);
 
         $this->artisan("trackabi:import --period={$period->id} --campaign=Palmetto --from=2026-08-26 --to=2026-09-10 --commit")
-            ->expectsOutputToContain('Registros Trackabi creados: 3')
+            ->expectsOutputToContain('Registros Trackabi creados: 2')
             ->assertSuccessful();
 
         $this->assertDatabaseHas('hubstaff_time_entries', [
@@ -332,10 +361,9 @@ class HubstaffImportTest extends TestCase
             'total_seconds' => 25200,
             'active' => true,
         ]);
-        $this->assertDatabaseHas('hubstaff_time_entries', [
+        $this->assertDatabaseMissing('hubstaff_time_entries', [
             'source_provider' => 'trackabi',
             'external_id' => 'trackabi-marco-protected',
-            'active' => false,
         ]);
         $this->assertDatabaseMissing('hubstaff_time_entries', [
             'source_provider' => 'trackabi',

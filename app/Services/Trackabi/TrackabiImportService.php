@@ -59,6 +59,10 @@ class TrackabiImportService
             $affectedEmployeeIds = collect();
 
             foreach ($plan['daily_summaries'] as $summary) {
+                if ($summary['protected_review']) {
+                    continue;
+                }
+
                 $shouldAffectPayroll = ! $summary['protected_review']
                     && ! $summary['manual_overlap_conflict'];
 
@@ -167,17 +171,19 @@ class TrackabiImportService
             ->whereRaw('lower(name) = ?', [strtolower($campaignName)])
             ->first();
 
-        if (! $campaign) {
+        $allCampaigns = strtolower($campaignName) === 'all';
+
+        if (! $campaign && ! $allCampaigns) {
             throw new RuntimeException("No existe la campaña {$campaignName} en payroll.");
         }
 
         $employees = Employee::query()
-            ->where('campaign_id', $campaign->id)
+            ->when(! $allCampaigns, fn ($query) => $query->where('campaign_id', $campaign->id))
             ->where('active', true)
             ->get();
         $allowedEmails = $this->allowedEmails($campaignName);
         $rawEntries = $this->client->listTimeEntries($from, $to, [
-            'projectId' => $this->shouldFilterByProjectId()
+            'projectId' => ! $allCampaigns && $this->shouldFilterByProjectId()
                 ? $this->projectId($campaignName)
                 : '',
         ]);
@@ -636,10 +642,10 @@ class TrackabiImportService
         $email = $entry['source_email'];
 
         if ($email) {
-            $employee = $employees->first(fn (Employee $employee): bool => strtolower((string) $employee->email) === $email);
+            $matches = $employees->filter(fn (Employee $employee): bool => strtolower((string) $employee->email) === $email);
 
-            if ($employee) {
-                return $employee;
+            if ($matches->isNotEmpty()) {
+                return $matches->count() === 1 ? $matches->first() : null;
             }
         }
 
@@ -651,11 +657,13 @@ class TrackabiImportService
 
         $tokens = collect(explode(' ', $name))->filter()->values();
 
-        return $employees->first(function (Employee $employee) use ($tokens): bool {
+        $matches = $employees->filter(function (Employee $employee) use ($tokens): bool {
             $employeeName = $this->normalizeName($employee->name.' '.$employee->hubstaff_name);
 
             return $tokens->every(fn (string $token): bool => str_contains($employeeName, $token));
         });
+
+        return $matches->count() === 1 ? $matches->first() : null;
     }
 
     private function normalizeName(string $name): string

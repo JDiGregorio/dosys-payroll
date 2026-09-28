@@ -3526,6 +3526,41 @@ class PayrollCalculationServiceTest extends TestCase
             ->count());
     }
 
+    public function test_september_preparation_persists_admin_pay_and_schedule_caps(): void
+    {
+        $period = PayrollPeriod::create(['name' => 'September audit', 'starts_at' => '2026-09-11', 'ends_at' => '2026-09-25']);
+        foreach (['Jonathan Eduardo Garcia Trujillo', 'Orely Samantha Ramirez Bogran'] as $name) {
+            Employee::create(['name' => $name, 'active' => true, 'daily_hours' => 8,
+                'hourly_rate' => 50, 'monthly_salary' => 12000, 'semi_monthly_salary' => 6000]);
+        }
+        $template = $this->createTemplate('Weekdays', 'diurna', [8, 8, 8, 8, 8]);
+        $agent = Employee::create(['name' => 'Scheduled agent', 'active' => true,
+            'daily_hours' => 8, 'hourly_rate' => 50, 'work_schedule_template_id' => $template->id]);
+        foreach (['2026-09-11', '2026-09-12'] as $date) {
+            HubstaffTimeEntry::create(['payroll_period_id' => $period->id, 'employee_id' => $agent->id,
+                'hubstaff_member' => $agent->name, 'date' => $date, 'total_seconds' => 43200, 'active' => true]);
+        }
+        $command = "payroll:prepare-september-second-half --period={$period->id}";
+        $this->artisan($command)->assertSuccessful();
+        $this->assertFalse($period->fresh()->limit_payable_to_schedule);
+        $this->assertSame(0, Employee::where('paid_without_tracking', true)->count());
+        $this->artisan($command.' --apply')->assertSuccessful();
+        $review = DailyTimeReview::where('employee_id', $agent->id)->whereDate('date', '2026-09-11')->firstOrFail();
+        $review->update(['justified_absence_seconds' => 60, 'supervisor_comment' => 'Preserve', 'status' => 'revisado_supervisor']);
+        $this->artisan($command.' --apply')->assertSuccessful();
+        $this->assertSame('Preserve', $review->fresh()->supervisor_comment);
+        $this->assertSame(60, $review->fresh()->justified_absence_seconds);
+        $this->assertSame(28800, $review->fresh()->payable_seconds);
+        $this->assertSame(0, DailyTimeReview::where('employee_id', $agent->id)->whereDate('date', '2026-09-12')->firstOrFail()->payable_seconds);
+        $this->assertSame(86400, (int) HubstaffTimeEntry::sum('total_seconds'));
+        foreach (Employee::where('paid_without_tracking', true)->get() as $admin) {
+            $result = PayrollResult::where('employee_id', $admin->id)->firstOrFail();
+            $this->assertEquals(15, $result->worked_days);
+            $this->assertEquals(6000, $result->worked_salary_amount);
+            $this->assertEquals(0, $result->lost_time_seconds);
+        }
+    }
+
     /**
      * @param  array<int, float|int>  $hours
      */

@@ -15,6 +15,7 @@ class Employee extends Model
     protected function casts(): array
     {
         return [
+            'paid_without_tracking' => 'boolean',
             'weekly_hours' => 'decimal:2',
             'ordinary_weekly_hours' => 'decimal:2',
             'daily_hours' => 'decimal:2',

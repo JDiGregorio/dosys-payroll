@@ -16,10 +16,68 @@ use App\Services\Trackabi\TrackabiImportService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Artisan::command('payroll:prepare-september-second-half {--period=9} {--apply}', function (PayrollCalculationService $service, TimeParserService $parser): int {
+    $period = PayrollPeriod::find((int) $this->option('period'));
+    if (! $period || $period->status === 'cerrado'
+        || $period->starts_at->toDateString() !== '2026-09-11'
+        || $period->ends_at->toDateString() !== '2026-09-25') {
+        $this->error('Se requiere un periodo abierto del 11 al 25 de septiembre de 2026.');
+
+        return self::FAILURE;
+    }
+
+    $admins = Employee::whereIn('name', [
+        'Jonathan Eduardo Garcia Trujillo', 'Orely Samantha Ramirez Bogran',
+    ])->where('active', true)->get();
+    if ($admins->count() !== 2) {
+        $this->error('No se encontraron exactamente Jonathan y Orely activos. No se aplicaron cambios.');
+
+        return self::FAILURE;
+    }
+
+    if ($this->option('apply')) {
+        DB::transaction(function () use ($period, $admins, $service): void {
+            foreach ($admins as $employee) {
+                $employee->update(['paid_without_tracking' => true]);
+            }
+            $period->update(['limit_payable_to_schedule' => true]);
+            $service->recalculatePeriodPreservingManual($period);
+        });
+    }
+
+    $this->info($this->option('apply') ? 'Politicas aplicadas y periodo recalculado.' : 'Vista previa; no se modificaron datos.');
+    $this->line('Politicas: pago completo sin tracker para Jonathan/Orely; limitar pago de registros al horario y extras preasignadas.');
+    $reviews = DailyTimeReview::with('employee')->where('payroll_period_id', $period->id)->get();
+    $this->table(['Empleado', 'Dias con pago', 'Registrado', 'Esperado pagable', 'Pagable', 'Extra pagable'],
+        $reviews->groupBy('employee_id')->map(fn ($rows) => [
+            $rows->first()->employee->name,
+            $rows->where('payable_seconds', '>', 0)->count(),
+            $parser->secondsToHourMinute((int) $rows->sum('hubstaff_total_seconds')),
+            $parser->secondsToHourMinute((int) $rows->sum('expected_paid_seconds')),
+            $parser->secondsToHourMinute((int) $rows->sum('payable_seconds')),
+            $parser->secondsToHourMinute((int) $rows->sum('possible_overtime_seconds')),
+        ])->values()->all());
+    $excess = $reviews->filter(fn ($r) => ! $r->paid_day_off && $r->payable_seconds > $r->expected_paid_seconds);
+    $this->line('Dias con pago superior al limite: '.$excess->count());
+    $anomalies = $reviews->filter(fn ($r) => $r->hubstaff_total_seconds > 86400
+        || ($r->hubstaff_total_seconds > 0 && ! $r->scheduled_work_day));
+    if ($anomalies->isNotEmpty()) {
+        $this->warn('Revisar timers mayores a 24h o registros fuera de jornada (se conservan los originales):');
+        $this->table(['Empleado', 'Fecha', 'Registrado', 'Pagable'], $anomalies->map(fn ($r) => [
+            $r->employee->name, $r->date->toDateString(),
+            $parser->secondsToHourMinute($r->hubstaff_total_seconds),
+            $parser->secondsToHourMinute($r->payable_seconds),
+        ])->values()->all());
+    }
+
+    return $this->option('apply') && $excess->isNotEmpty() ? self::FAILURE : self::SUCCESS;
+})->purpose('Audita y prepara septiembre 11-25 conservando revisiones y registros originales.');
 
 Artisan::command(
     'payroll:recalculate-period {period_id : ID del período} {--preserve-manual : Confirma que deben preservarse campos manuales}',
@@ -82,12 +140,6 @@ Artisan::command(
             return self::FAILURE;
         }
 
-        if ($campaign !== 'Palmetto') {
-            $this->error('Por seguridad, esta primera integración Trackabi solo permite --campaign=Palmetto.');
-
-            return self::FAILURE;
-        }
-
         if ((bool) $this->option('dry-run') === (bool) $this->option('commit')) {
             $this->error('Debes indicar exactamente una opción: --dry-run o --commit.');
 
@@ -137,7 +189,7 @@ Artisan::command(
         $this->line('Registros API: '.$plan['raw_entries']);
         $this->line('Registros después de filtrar fechas localmente: '.$plan['date_filtered_entries']);
         $this->line('Registros con loggedTime null: '.$plan['logged_time_null_entries']);
-        $this->line('Registros válidos Palmetto: '.$plan['normalized_entries']);
+        $this->line('Registros válidos Trackabi: '.$plan['normalized_entries']);
         $this->line('Registros mapeados: '.$plan['mapped_entries']);
         $this->line('Empleados encontrados: '.$plan['employees_found']);
         $this->line('Días empleado encontrados: '.$plan['days_found']);
@@ -203,7 +255,7 @@ Artisan::command(
 
         return self::SUCCESS;
     },
-)->purpose('Importa tiempos de Trackabi para Palmetto sin tocar otras campañas.');
+)->purpose('Importa tiempos de Trackabi por campaña o con --campaign=all para todas.');
 
 Artisan::command(
     'payroll:reconcile-justified-idle {--period= : ID del período de planilla} {--employee= : ID del empleado; opcional} {--include-pending : Incluye revisiones pendientes, útil para correcciones puntuales} {--apply : Aplica el ajuste; sin esta opción solo muestra vista previa}',

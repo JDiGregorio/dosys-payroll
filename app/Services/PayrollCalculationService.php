@@ -106,6 +106,9 @@ class PayrollCalculationService
 
         $review->difference_seconds = (int) $review->hubstaff_total_seconds
             - (int) $review->expected_hubstaff_seconds;
+        if ($employee?->paid_without_tracking) {
+            $review->difference_seconds = 0;
+        }
         $review->possible_overtime_seconds = $this->paidAssignedOvertimeSeconds($review);
 
         $review->save();
@@ -466,6 +469,9 @@ class PayrollCalculationService
 
     private function effectiveSalaryCalculationMethod(PayrollPeriod $period, Employee $employee): string
     {
+        if ($employee->paid_without_tracking) {
+            return 'semi_monthly_fixed_with_deductions';
+        }
         $configuredMethod = $employee->salary_calculation_method ?: 'hourly_actual_hours';
 
         if (
@@ -613,6 +619,9 @@ class PayrollCalculationService
 
     private function creditedRequiredSeconds(DailyTimeReview $review): int
     {
+        if ($review->employee?->paid_without_tracking) {
+            return $this->requiredSeconds($review);
+        }
         $period = $review->relationLoaded('payrollPeriod')
             ? $review->payrollPeriod
             : $review->payrollPeriod()->first();
@@ -634,6 +643,9 @@ class PayrollCalculationService
 
     private function regularUnjustifiedSeconds(DailyTimeReview $review): int
     {
+        if ($review->employee?->paid_without_tracking) {
+            return 0;
+        }
         if ($review->paid_day_off || $this->isFullyJustifiedAbsence($review)) {
             return 0;
         }
@@ -668,6 +680,9 @@ class PayrollCalculationService
 
     private function isPayableUnscheduledWork(DailyTimeReview $review): bool
     {
+        if ($review->payrollPeriod?->limit_payable_to_schedule) {
+            return false;
+        }
         if (
             (int) $review->expected_ordinary_seconds > 0
             || (int) $review->hubstaff_total_seconds <= 0

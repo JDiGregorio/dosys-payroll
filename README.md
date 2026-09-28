@@ -139,8 +139,46 @@ deducciones, estados y aprobaciones.
 
 ## Importar tiempos desde Trackabi
 
-La integración inicial de Trackabi está limitada a la campaña **Palmetto** y a
-los 14 correos configurados en `config/trackabi.php`. El importador usa email
+Preparacion de produccion para septiembre 11-25 (periodo 9), despues de desplegar:
+
+```bash
+./vendor/bin/sail artisan migrate --force
+./vendor/bin/sail artisan config:clear
+./vendor/bin/sail artisan trackabi:import --period=9 --campaign=all --from=2026-09-11 --to=2026-09-25 --dry-run
+./vendor/bin/sail artisan trackabi:import --period=9 --campaign=all --from=2026-09-11 --to=2026-09-25 --commit
+./vendor/bin/sail artisan payroll:prepare-september-second-half --period=9
+./vendor/bin/sail artisan payroll:prepare-september-second-half --period=9 --apply
+```
+
+Si Trackabi ya esta importado, omitir sus dos comandos. No usar estimaciones
+historicas ni correcciones de la quincena anterior. La preparacion conserva
+registros crudos, bonos y revisiones manuales. Activa permanentemente
+`paid_without_tracking` para Jonathan Garcia y Orely Ramirez (salario completo,
+sin penalizacion por falta de tracker, deducciones configuradas conservadas).
+Activa `limit_payable_to_schedule` solo en el periodo seleccionado: los dias
+fuera de plantilla no generan pago automatico por registros; horas adicionales
+reales pueden autorizarse mediante los ajustes manuales de horas extra.
+OFF conserva su tratamiento existente. El reporte muestra excepciones y limites
+diarios; timers abiertos no permiten certificar las horas realmente trabajadas.
+
+Para el periodo 9 (11 al 25 de septiembre de 2026), todas las campanas:
+
+```bash
+./vendor/bin/sail artisan trackabi:import --period=9 --campaign=all --from=2026-09-11 --to=2026-09-25 --dry-run
+./vendor/bin/sail artisan trackabi:import --period=9 --campaign=all --from=2026-09-11 --to=2026-09-25 --commit
+```
+
+Se conserva `loggedTime` completo, sin estimaciones de perdida ni descuentos
+por productividad. El endpoint actual no devuelve productive/unproductive;
+esas metricas no se pueden reconstruir a partir de inicio/fin del timer ni se
+deben sumar otra vez al tiempo registrado. Los registros con `loggedTime` null
+aportan cero y se reportan en la vista previa. Las revisiones protegidas y sus
+registros activos se conservan incluso al repetir la importacion.
+
+La integración permite seleccionar una campaña o `--campaign=all` para todas.
+El filtro individual Palmetto conserva los correos configurados en
+`config/trackabi.php`; `all` busca entre todos los empleados activos sin filtro
+de proyecto ni lista de correos. El importador usa email
 como llave principal y, si el email no coincide, intenta resolver el empleado
 por nombre dentro de Palmetto.
 
