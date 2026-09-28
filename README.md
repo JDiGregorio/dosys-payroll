@@ -139,6 +139,57 @@ deducciones, estados y aprobaciones.
 
 ## Importar tiempos desde Trackabi
 
+La API oficial tiene un cliente de diagnostico independiente de MindCloud.
+Ver [configuracion, discovery y limitaciones de la API directa](docs/trackabi-direct-api.md).
+
+### Timer y actividad de escritorio
+
+Verificacion del 28 de septiembre de 2026: la respuesta completa de MindCloud
+para Alexa contiene `loggedTime`, pero no Desktop activity time, productive ni
+unproductive. La especificacion oficial
+<https://trackabi.com/dest/swagger.json> (API 1.0 Beta) tampoco publica un endpoint
+para estas metricas. Cambiar `fields` o usar la misma API directamente no agrega
+campos que no estan disponibles.
+
+El calendario muestra Trackabi limitado a las horas esperadas del tracker para
+cada fecha, Pagables, Idle y Diferencia. La diferencia usa ese mismo limite;
+los registros inferiores no se incrementan. El timer original permanece intacto
+y se consulta en el detalle o al pasar sobre el valor. Hubstaff conserva sus
+valores originales. Idle es N/D para Trackabi porque la API actual no lo entrega.
+En rotativos, la expectativa registrada es de 11 horas;
+el calculo existente reconoce el almuerzo para llegar a 12 pagables. Cada fecha
+de plantilla conserva su expectativa propia (7 u 8 horas para las de 36h).
+Este limite NO reconstruye actividad ni permite certificar faltantes reales:
+los dias pendientes basados en timer no se muestran automaticamente como
+Correcto, aunque cubran el horario. Las revisiones manuales mantienen su estado.
+
+Para obtener la actividad real, exportar desde Insights > Staff > Summary,
+seleccionando un solo dia y todos los empleados. Segun la documentacion de
+Trackabi (<https://trackabi.com/help/csv-import-and-export>), ese CSV contiene
+Productive activity time y Unproductive activity time por persona. Se necesita
+una exportacion por fecha si el archivo no trae desglose diario. Un resumen de
+la quincena no permite aplicar plantillas y justificaciones por dia. Ese CSV
+todavia no se importa con `trackabi:import`, que consume time entries de la API.
+
+Para el periodo 9 se puede proponer una perdida historica provisional por
+empleado con `payroll:estimate-trackabi-loss`. El timer original se conserva;
+la estimacion queda en la revision diaria, puede corregirse o justificarse y
+el calculo usa solamente el remanente conforme a las reglas actuales de horas
+ordinarias y extra. Ver [docs/trackabi-historical-loss.md](docs/trackabi-historical-loss.md).
+
+Analisis historico de solo lectura, por empleado, excluyendo dias con Trackabi,
+fuentes mezcladas y periodos no anteriores al seleccionado:
+
+```bash
+./vendor/bin/sail artisan payroll:time-history --period=9 --history=6,7,8
+```
+
+Muestra frecuencia, mediana y maximo de diferencias contra el horario antes de
+justificaciones, junto con dias que tienen justificacion. No asigna esos minutos
+a la quincena actual. No ejecutar `--estimate-palmetto-real-time` para generar
+descuentos basados en esta estadistica. La API directa permanece independiente,
+sin intervenir en las importaciones ni en el calculo.
+
 Preparacion de produccion para septiembre 11-25 (periodo 9), despues de desplegar:
 
 ```bash

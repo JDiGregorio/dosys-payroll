@@ -328,7 +328,6 @@
 
         @php
             $reviewsByDate = $this->reviewsByDate();
-            $timeTrackingLabel = $this->timeTrackingLabel();
         @endphp
 
         <div class="dr-calendar-shell" wire:key="daily-review-calendar-{{ $periodId }}-{{ $employeeId }}">
@@ -400,9 +399,14 @@
                                                 <strong></strong>
                                             </div>
                                         @else
+                                            @php
+                                                $trackabiTimer = $review->hasTrackabiTimer();
+                                                $displayTracked = $trackabiTimer ? $review->computableTrackedSeconds() : $review->hubstaff_total_seconds;
+                                                $displayDifference = $trackabiTimer ? $displayTracked - $review->expected_hubstaff_seconds : $review->difference_seconds;
+                                            @endphp
                                             <div class="dr-event-row">
-                                                <span>{{ $timeTrackingLabel }}</span>
-                                                <strong>{{ $this->hours($review->hubstaff_total_seconds) }} h</strong>
+                                                <span>{{ $this->timeTrackingLabel($review) }}</span>
+                                                <strong @if ($trackabiTimer) title="Timer original: {{ $this->hours($review->hubstaff_total_seconds) }} h; mostrado con limite de jornada." @endif>{{ $this->hours($displayTracked) }} h</strong>
                                             </div>
                                             <div class="dr-event-row">
                                                 <span>Pagables</span>
@@ -410,11 +414,11 @@
                                             </div>
                                             <div class="dr-event-row">
                                                 <span>Idle</span>
-                                                <strong>{{ $this->hours($review->hubstaff_idle_seconds) }} h</strong>
+                                                <strong>{{ $trackabiTimer ? 'N/D' : $this->hours($review->hubstaff_idle_seconds).' h' }}</strong>
                                             </div>
                                             <div class="dr-event-row">
                                                 <span>Dif.</span>
-                                                <strong>{{ $this->hours($review->difference_seconds) }} h</strong>
+                                                <strong>{{ $this->hours($displayDifference) }} h</strong>
                                             </div>
                                         @endif
                                     </a>

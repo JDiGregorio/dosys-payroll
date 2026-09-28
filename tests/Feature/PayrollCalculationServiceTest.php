@@ -368,6 +368,8 @@ class PayrollCalculationServiceTest extends TestCase
             'schedule_type_id' => $schedule->id,
             'work_schedule_template_id' => $template->id,
             'ordinary_weekly_hours' => 36,
+            'overtime_hours' => 10,
+            'overtime_hourly_rate' => 73.9584,
             'daily_hours' => 0,
             'hourly_rate' => 59.1667,
             'salary_calculation_method' => 'hourly_actual_hours',
@@ -412,6 +414,8 @@ class PayrollCalculationServiceTest extends TestCase
             'employee_id' => $employee->id,
             'payable_seconds' => 54000,
             'worked_salary_amount' => 887.50,
+            'overtime_seconds' => 0,
+            'overtime_amount' => 0,
             'lost_time_seconds' => 0,
             'lost_time_amount' => 0,
         ]);

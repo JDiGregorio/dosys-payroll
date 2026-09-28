@@ -306,6 +306,39 @@ class FilamentPagesTest extends TestCase
         );
     }
 
+    public function test_trackabi_calendar_caps_timer_without_certifying_activity_or_changing_raw_data(): void
+    {
+        $user = User::create(['name' => 'Time auditor', 'email' => 'time-auditor@example.com',
+            'password' => 'password', 'profile' => 'rrhh', 'active' => true]);
+        $campaign = Campaign::create(['name' => 'RRD FINANCIAL']);
+        $period = PayrollPeriod::create(['name' => 'September', 'starts_at' => '2026-09-11', 'ends_at' => '2026-09-25']);
+        $employee = Employee::create(['name' => 'Alexa test', 'active' => true, 'campaign_id' => $campaign->id]);
+        $review = DailyTimeReview::create(['employee_id' => $employee->id, 'payroll_period_id' => $period->id,
+            'date' => '2026-09-16', 'expected_hubstaff_seconds' => 28800, 'hubstaff_total_seconds' => 32580,
+            'payable_seconds' => 28800, 'difference_seconds' => 3780, 'status' => 'pendiente']);
+        $entry = HubstaffTimeEntry::create(['employee_id' => $employee->id, 'payroll_period_id' => $period->id,
+            'date' => '2026-09-16', 'hubstaff_member' => $employee->name, 'source_provider' => 'trackabi',
+            'total_seconds' => 32580, 'active' => true]);
+        $this->assertSame('Trackabi', DailyTimeReviewResource::timeTrackingLabel($review));
+        $this->assertFalse(DailyTimeReviewResource::isCorrectPendingReview($review));
+        $this->assertSame(28800, $review->computableTrackedSeconds());
+        $this->actingAs($user)->get("/admin/daily-review-calendar?period_id={$period->id}&employee_id={$employee->id}")
+            ->assertOk()->assertSee('Trackabi')->assertSee('Pagables')->assertSee('Idle')->assertSee('Sin revisión')
+            ->assertSee('Timer original: 9:03 h')->assertSee('>8:00 h</strong>', false)
+            ->assertSee('>0:00 h</strong>', false)->assertDontSee('>1:03 h</strong>', false)
+            ->assertSee('N/D')->assertDontSee('Computables')->assertDontSee('Correcto')->assertDontSee('Hubstaff');
+        $this->assertSame(32580, $review->fresh()->hubstaff_total_seconds);
+        $this->assertSame(32580, $entry->fresh()->total_seconds);
+        $review->hubstaff_total_seconds = 27000;
+        $this->assertSame(27000, $review->computableTrackedSeconds());
+        $review->expected_hubstaff_seconds = 0;
+        $this->assertSame(0, $review->computableTrackedSeconds());
+        $review->status = 'revisado_supervisor';
+        $this->assertSame('Aplicado', DailyTimeReviewResource::displayStatusLabel($review));
+        $entry->update(['source_provider' => 'hubstaff_csv']);
+        $this->assertSame('Hubstaff', DailyTimeReviewResource::timeTrackingLabel($review));
+    }
+
     public function test_daily_review_calendar_uses_trackabi_label_for_palmetto(): void
     {
         $user = User::query()->create([

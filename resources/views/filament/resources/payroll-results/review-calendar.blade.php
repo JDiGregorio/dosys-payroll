@@ -271,7 +271,6 @@
     use App\Filament\Resources\DailyTimeReviews\DailyTimeReviewResource;
     use App\Models\DailyTimeReview;
     use App\Services\TimeParserService;
-    use App\Support\TimeTrackingSource;
     use Carbon\CarbonInterface;
     use Carbon\CarbonPeriod;
 
@@ -294,7 +293,6 @@
         : collect();
 
     $statusLabel = fn (?DailyTimeReview $review): string => DailyTimeReviewResource::displayStatusLabel($review);
-    $timeTrackingLabel = TimeTrackingSource::labelForEmployee($employee);
 @endphp
 
 <div class="dr-page">
@@ -382,9 +380,14 @@
                                                 <strong></strong>
                                             </div>
                                         @else
+                                            @php
+                                                $trackabiTimer = $review->hasTrackabiTimer();
+                                                $displayTracked = $trackabiTimer ? $review->computableTrackedSeconds() : $review->hubstaff_total_seconds;
+                                                $displayDifference = $trackabiTimer ? $displayTracked - $review->expected_hubstaff_seconds : $review->difference_seconds;
+                                            @endphp
                                             <div class="dr-event-row">
-                                                <span>{{ $timeTrackingLabel }}</span>
-                                                <strong>{{ $timeParser->secondsToHourMinute($review->hubstaff_total_seconds) }} h</strong>
+                                                <span>{{ DailyTimeReviewResource::timeTrackingLabel($review) }}</span>
+                                                <strong @if ($trackabiTimer) title="Timer original: {{ $timeParser->secondsToHourMinute($review->hubstaff_total_seconds) }} h; mostrado con limite de jornada." @endif>{{ $timeParser->secondsToHourMinute($displayTracked) }} h</strong>
                                             </div>
                                             <div class="dr-event-row">
                                                 <span>Pagables</span>
@@ -392,11 +395,11 @@
                                             </div>
                                             <div class="dr-event-row">
                                                 <span>Idle</span>
-                                                <strong>{{ $timeParser->secondsToHourMinute($review->hubstaff_idle_seconds) }} h</strong>
+                                                <strong>{{ $trackabiTimer ? 'N/D' : $timeParser->secondsToHourMinute($review->hubstaff_idle_seconds).' h' }}</strong>
                                             </div>
                                             <div class="dr-event-row">
                                                 <span>Dif.</span>
-                                                <strong>{{ $timeParser->secondsToHourMinute($review->difference_seconds) }} h</strong>
+                                                <strong>{{ $timeParser->secondsToHourMinute($displayDifference) }} h</strong>
                                             </div>
                                         @endif
                                     </a>

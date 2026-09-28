@@ -82,7 +82,7 @@ class DailyReviewCalendar extends Page
             ? $review->employee
             : $review?->employee()->with('campaign')->first();
 
-        return TimeTrackingSource::labelForEmployee($employee ?: $this->selectedEmployee());
+        return TimeTrackingSource::labelForEmployee($employee ?: $this->selectedEmployee(), $this->periodId, $review?->date?->toDateString());
     }
 
     public function calendarDays(): Collection

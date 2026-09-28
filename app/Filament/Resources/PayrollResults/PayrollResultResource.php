@@ -238,7 +238,7 @@ class PayrollResultResource extends Resource
             ? $record->employee
             : $record?->employee()->with('campaign')->first();
 
-        return TimeTrackingSource::labelForEmployee($employee);
+        return TimeTrackingSource::labelForEmployee($employee, $record?->payroll_period_id);
     }
 
     public static function sendVoucherAction(): Action

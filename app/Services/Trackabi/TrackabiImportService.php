@@ -469,7 +469,7 @@ class TrackabiImportService
                 }
 
                 $remainingLossSeconds = $dailyLossSeconds * $eligibleSummaries->count();
-                $maxDailyLossSeconds = max((int) config('trackabi.estimated_loss_max_minutes', 15), 0) * 60;
+                $maxDailyLossSeconds = max((int) config('trackabi.estimated_loss_max_minutes', 28), 0) * 60;
 
                 foreach ($eligibleSummaries as $summary) {
                     if ($remainingLossSeconds <= 0) {
@@ -578,7 +578,7 @@ class TrackabiImportService
         }
 
         $roundedSeconds = (int) round($averageSeconds / 60) * 60;
-        $maxSeconds = max((int) config('trackabi.estimated_loss_max_minutes', 15), 0) * 60;
+        $maxSeconds = max((int) config('trackabi.estimated_loss_max_minutes', 28), 0) * 60;
 
         return $cache[$employee->id] = min($roundedSeconds, $maxSeconds);
     }

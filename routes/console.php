@@ -12,11 +12,84 @@ use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
 use App\Services\SeptemberFirstHalfPayrollCorrectionsService;
 use App\Services\TimeParserService;
+use App\Services\Trackabi\HistoricalLostTimeEstimator;
+use App\Services\Trackabi\HistoricalTimeAnalysis;
 use App\Services\Trackabi\TrackabiImportService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+
+require __DIR__.'/trackabi-direct.php';
+
+Artisan::command('payroll:estimate-trackabi-loss {--period=9} {--employee= : ID del empleado} {--details : Muestra cada fecha} {--refresh-pending : Recalcula solo propuestas pendientes sin ajustes ni justificaciones} {--apply : Guarda las estimaciones y recalcula; por defecto solo vista previa}', function (HistoricalLostTimeEstimator $estimator, TimeParserService $parser): int {
+    $period = PayrollPeriod::query()->find((int) $this->option('period'));
+    if (! $period || $period->status === 'cerrado'
+        || $period->starts_at->toDateString() !== '2026-09-11'
+        || $period->ends_at->toDateString() !== '2026-09-25') {
+        $this->error('Se requiere un periodo abierto del 11 al 25 de septiembre de 2026.');
+
+        return self::FAILURE;
+    }
+
+    $employeeId = $this->option('employee') ? (int) $this->option('employee') : null;
+    $refreshPending = (bool) $this->option('refresh-pending');
+    $rows = $estimator->plan($period, $employeeId, $refreshPending);
+    $this->line('Estimación histórica provisional; timer Trackabi original intacto.');
+    $this->line('Días elegibles: '.$rows->count().'; empleados: '.$rows->pluck('employee_id')->unique()->count()
+        .'; total estimado: '.$parser->secondsToHourMinute((int) $rows->sum('estimated_lost_seconds')));
+    $this->table(['Empleado', 'Días', 'Estimado', 'Muestras históricas'], $rows->groupBy('employee_id')->map(fn ($days) => [
+        $days->first()['employee'],
+        $days->count(),
+        $parser->secondsToHourMinute((int) $days->sum('estimated_lost_seconds')),
+        $days->first()['metadata']['sample_days'],
+    ])->values()->all());
+
+    if ($this->option('details')) {
+        $this->table(['Empleado', 'Fecha', 'Timer', 'Esperado', 'OT', 'Estimado'], $rows->map(fn ($row) => [
+            $row['employee'], $row['date'],
+            $parser->secondsToHourMinute($row['raw_seconds']),
+            $parser->secondsToHourMinute($row['expected_seconds']),
+            $parser->secondsToHourMinute($row['overtime_seconds']),
+            $parser->secondsToHourMinute($row['estimated_lost_seconds']),
+        ])->all());
+    }
+
+    if (! $this->option('apply')) {
+        $this->info('Vista previa: no se modificaron datos.');
+
+        return self::SUCCESS;
+    }
+
+    $applied = $estimator->apply($period, $rows, $refreshPending);
+    $this->info("Estimaciones aplicadas: {$applied}. Recalculo realizado solo para empleados afectados.");
+
+    return self::SUCCESS;
+})->purpose('Estima provisionalmente pérdidas Trackabi de septiembre con histórico Hubstaff por empleado.');
+
+Artisan::command('payroll:time-history {--period=9} {--history=6,7,8}', function (HistoricalTimeAnalysis $analysis, TimeParserService $parser): int {
+    $period = PayrollPeriod::find((int) $this->option('period'));
+    if (! $period) {
+        $this->error('Periodo no encontrado.');
+
+        return self::FAILURE;
+    }
+    $ids = array_filter(array_map('intval', explode(',', (string) $this->option('history'))));
+    $rows = $analysis->analyze($period, $ids);
+    $this->warn('Analisis historico Hubstaff: diferencias antes de justificaciones, NO deducciones ni estimaciones de la quincena actual.');
+    $this->table(['Empleado', 'Dias Hubstaff', 'Con diferencia', '%', 'Mediana diferencia', 'Maximo', 'Con justificacion'], array_map(fn ($row) => [
+        $row['employee'], $row['days'], $row['short_days'], $row['percentage'] ?? 'N/D',
+        $row['median_short_seconds'] === null ? 'N/D' : $parser->secondsToHourMinute($row['median_short_seconds']),
+        $row['max_short_seconds'] === null ? 'N/D' : $parser->secondsToHourMinute($row['max_short_seconds']),
+        $row['days_with_justification'],
+    ], $rows));
+    $days = array_sum(array_column($rows, 'days'));
+    $shortDays = array_sum(array_column($rows, 'short_days'));
+    $this->line("Dias analizados: {$days}; dias con diferencia: {$shortDays}.");
+    $this->line('No se modificaron registros, revisiones ni salarios.');
+
+    return self::SUCCESS;
+})->purpose('Analiza diferencias historicas reales de Hubstaff sin asignar faltantes a otras fechas.');
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
@@ -117,7 +190,7 @@ Artisan::command(
 )->purpose('Recalcula un período sin sobrescribir información manual.');
 
 Artisan::command(
-    'trackabi:import {--period= : ID del período de planilla} {--campaign=Palmetto : Campaña/proyecto de Trackabi} {--from= : Fecha inicial YYYY-MM-DD} {--to= : Fecha final YYYY-MM-DD} {--dry-run : Solo muestra vista previa} {--commit : Guarda los registros y recalcula empleados afectados} {--prefer-trackabi-on-conflict : En overlaps Hubstaff/Trackabi, usa Trackabi y desactiva Hubstaff} {--estimate-palmetto-real-time : Capa Trackabi al horario esperado y descuenta pérdida histórica estimada} {--estimated-loss-max-minutes=15 : Límite máximo de pérdida histórica por día}',
+    'trackabi:import {--period= : ID del período de planilla} {--campaign=Palmetto : Campaña/proyecto de Trackabi} {--from= : Fecha inicial YYYY-MM-DD} {--to= : Fecha final YYYY-MM-DD} {--dry-run : Solo muestra vista previa} {--commit : Guarda los registros y recalcula empleados afectados} {--prefer-trackabi-on-conflict : En overlaps Hubstaff/Trackabi, usa Trackabi y desactiva Hubstaff} {--estimate-palmetto-real-time : Capa Trackabi al horario esperado y descuenta pérdida histórica estimada} {--estimated-loss-max-minutes=28 : Límite máximo de pérdida histórica por día}',
     function (TrackabiImportService $service, TimeParserService $parser): int {
         $campaign = (string) $this->option('campaign');
         $fromOption = $this->option('from') ?: config('trackabi.import_from_date');

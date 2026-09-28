@@ -20,7 +20,7 @@ return [
     'palmetto_project_id' => (int) env('TRACKABI_PALMETTO_PROJECT_ID', 75415),
     'filter_by_project_id' => env('TRACKABI_FILTER_BY_PROJECT_ID', false),
     'estimate_real_time' => env('TRACKABI_ESTIMATE_REAL_TIME', false),
-    'estimated_loss_max_minutes' => (int) env('TRACKABI_ESTIMATED_LOSS_MAX_MINUTES', 15),
+    'estimated_loss_max_minutes' => (int) env('TRACKABI_ESTIMATED_LOSS_MAX_MINUTES', 28),
     'credited_break_minutes' => (int) env('TRACKABI_CREDITED_BREAK_MINUTES', 75),
     'historical_loss_period_ids' => array_filter(array_map(
         'intval',

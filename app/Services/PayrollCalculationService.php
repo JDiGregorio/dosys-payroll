@@ -632,7 +632,7 @@ class PayrollCalculationService
             : 0;
 
         return min(
-            max((int) $review->hubstaff_total_seconds, 0)
+            $review->payrollTrackedSeconds()
                 + $paidTimeNotTrackedSeconds
                 + max((int) $review->justified_absence_seconds, 0)
                 + $ptoSeconds
@@ -663,7 +663,7 @@ class PayrollCalculationService
 
         return max(
             $requiredSeconds
-                - (int) $review->hubstaff_total_seconds
+                - $review->payrollTrackedSeconds()
                 - $paidTimeNotTrackedSeconds
                 - (int) $review->justified_absence_seconds,
             0,
@@ -1038,6 +1038,11 @@ class PayrollCalculationService
             'status',
             'reviewed_by',
             'approved_by',
+            'estimated_lost_seconds',
+            'supervisor_adjustment_seconds',
+            'lost_time_source',
+            'lost_time_estimate_metadata',
+            'reviewed_at',
         ];
 
         return DailyTimeReview::query()

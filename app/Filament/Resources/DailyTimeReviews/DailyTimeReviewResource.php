@@ -6,6 +6,7 @@ use App\Filament\Resources\DailyTimeReviews\Pages\CreateDailyTimeReview;
 use App\Filament\Resources\DailyTimeReviews\Pages\EditDailyTimeReview;
 use App\Filament\Resources\DailyTimeReviews\Pages\ListDailyTimeReviews;
 use App\Models\DailyTimeReview;
+use App\Models\User;
 use App\Services\PayrollCalculationService;
 use App\Services\TimeParserService;
 use App\Support\TimeTrackingSource;
@@ -110,12 +111,25 @@ class DailyTimeReviewResource extends Resource
                             TextInput::make('assigned_overtime_hours')->label('Horas extra preasignadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond((int) $record->preassigned_overtime_seconds) : '0:00:00')),
                             TextInput::make('additional_overtime_hours')->label('Horas extra adicionales')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond((int) $record->additional_overtime_seconds) : '0:00:00')),
                             TextInput::make('required_hours')->label('Total requerido')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond(self::requiredSeconds($record)) : '0:00:00')),
-                            TextInput::make('hubstaff_total_hours')->label(fn (?DailyTimeReview $record): string => 'Total horas '.self::timeTrackingLabel($record))->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_total_seconds) : '0:00:00')),
+                            TextInput::make('hubstaff_total_hours')->label(fn (?DailyTimeReview $record): string => 'Total horas '.self::timeTrackingLabel($record))->helperText(fn (?DailyTimeReview $record): ?string => $record?->hasTrackabiTimer() ? 'Timer original (loggedTime). Actividad de escritorio, productivo y no productivo: no disponibles en esta importacion.' : null)->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_total_seconds) : '0:00:00')),
+                            TextInput::make('computable_tracked_hours')->label('Horas computables del timer')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => $record?->hasTrackabiTimer())->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->computableTrackedSeconds()) : '0:00:00')),
+                            TextInput::make('estimated_lost_hours')->label('Pérdida histórica estimada')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->estimated_lost_seconds) : '0:00')),
+                            TextInput::make('supervisor_lost_hours')->label('Pérdida propuesta por supervisor')->helperText('Ajusta la estimación. La justificación se descuenta de este valor.')
+                                ->rules(['regex:/^\d{1,2}:[0-5]\d$/'])
+                                ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
+                                ->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->provisionalLostSeconds()) : '0:00')),
+                            TextInput::make('final_estimated_lost_hours')->label('Pérdida estimada sin justificar')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->finalEstimatedLostSeconds()) : '0:00')),
+                            TextInput::make('lost_time_source_display')->label('Origen del faltante')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->lost_time_source === 'supervisor_adjustment' ? 'Ajuste del supervisor' : 'Estimación histórica')),
+                            TextInput::make('reviewed_by_display')->label('Revisado por')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->reviewed_by ? User::query()->find($record->reviewed_by)?->name : 'Pendiente')),
+                            TextInput::make('reviewed_at_display')->label('Fecha de revisión')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->reviewed_at?->format('d/m/Y H:i') ?? 'Pendiente')),
                             TextInput::make('hubstaff_idle_hours')->label(fn (?DailyTimeReview $record): string => 'Idle reportado por '.self::timeTrackingLabel($record))->helperText(fn (?DailyTimeReview $record): string => 'Es un dato independiente enviado por '.self::timeTrackingLabel($record).'; no representa necesariamente la diferencia contra las horas requeridas.')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_idle_seconds) : '0:00:00')),
                             TextInput::make('lost_time_hours')->label('Tiempo no trabajado')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond(self::lostTimeSeconds($record)) : '0:00:00')),
                             TextInput::make('justified_lost_time_hours')
                                 ->label('Tiempo justificado')
-                                ->helperText(fn (?DailyTimeReview $record): string => 'Formato HH:MM. Se suma al tiempo de '.self::timeTrackingLabel($record).' hasta completar el total requerido.')
+                                ->helperText(fn (?DailyTimeReview $record): string => $record?->lost_time_source
+                                    ? 'Formato HH:MM. Devuelve crédito al tiempo estimado; el remanente queda sin justificar.'
+                                    : 'Formato HH:MM. Se suma al tiempo de '.self::timeTrackingLabel($record).' hasta completar el total requerido.')
                                 ->placeholder('00:00')
                                 ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
                                 ->rules(['regex:/^\d{1,3}:[0-5]\d$/'])
@@ -183,7 +197,7 @@ class DailyTimeReviewResource extends Resource
                     ->icon('heroicon-o-check')
                     ->visible(fn (DailyTimeReview $record): bool => ! self::isClosedPeriod($record))
                     ->action(function (DailyTimeReview $record, PayrollCalculationService $service): void {
-                        $record->update(['status' => 'revisado_supervisor', 'reviewed_by' => auth()->id()]);
+                        $record->update(['status' => 'revisado_supervisor', 'reviewed_by' => auth()->id(), 'reviewed_at' => now()]);
                         self::recalculateReviewAndPayroll($record, $service);
                     }),
                 Action::make('paidDayOff')
@@ -195,6 +209,7 @@ class DailyTimeReviewResource extends Resource
                             'paid_day_off' => true,
                             'status' => 'revisado_supervisor',
                             'reviewed_by' => auth()->id(),
+                            'reviewed_at' => now(),
                         ]);
                         self::recalculateReviewAndPayroll($record, $service);
                     }),
@@ -220,7 +235,7 @@ class DailyTimeReviewResource extends Resource
             ? $record->employee
             : $record?->employee()->with('campaign')->first();
 
-        return TimeTrackingSource::labelForEmployee($employee);
+        return TimeTrackingSource::labelForEmployee($employee, $record?->payroll_period_id, $record?->date?->toDateString());
     }
 
     public static function hourStates(DailyTimeReview $record): array
@@ -229,6 +244,7 @@ class DailyTimeReviewResource extends Resource
 
         return [
             'justified_lost_time_hours' => $parser->secondsToHourMinute($record->justified_absence_seconds),
+            'supervisor_lost_hours' => $parser->secondsToHourMinute($record->provisionalLostSeconds()),
             'absence_justified' => self::isFullyJustifiedAbsence($record),
         ];
     }
@@ -244,7 +260,17 @@ class DailyTimeReviewResource extends Resource
         $parser = app(TimeParserService::class);
 
         if (self::hasHubstaffTime($record)) {
-            $lostTimeSeconds = self::lostTimeSeconds($record);
+            if ($record->lost_time_source && array_key_exists('supervisor_lost_hours', $data)) {
+                $proposed = $parser->parseToSeconds($data['supervisor_lost_hours']);
+                if ($proposed > (int) $record->expected_hubstaff_seconds) {
+                    throw ValidationException::withMessages(['supervisor_lost_hours' => 'La pérdida propuesta no puede exceder las horas esperadas del día.']);
+                }
+                $data['supervisor_adjustment_seconds'] = $proposed - (int) $record->estimated_lost_seconds;
+                $data['lost_time_source'] = $data['supervisor_adjustment_seconds'] === 0
+                    ? 'historical_estimate'
+                    : 'supervisor_adjustment';
+            }
+            $lostTimeSeconds = self::lostTimeSeconds($record, $data['supervisor_adjustment_seconds'] ?? null);
             $requestedJustifiedSeconds = $parser->parseToSeconds($data['justified_lost_time_hours'] ?? 0);
             $justifiedSeconds = $requestedJustifiedSeconds >= self::roundedMinuteSeconds($lostTimeSeconds)
                 ? $lostTimeSeconds
@@ -262,8 +288,10 @@ class DailyTimeReviewResource extends Resource
         }
 
         $data['status'] = 'revisado_supervisor';
+        $data['reviewed_by'] = auth()->id();
+        $data['reviewed_at'] = now();
 
-        unset($data['justified_lost_time_hours'], $data['absence_justified']);
+        unset($data['justified_lost_time_hours'], $data['supervisor_lost_hours'], $data['absence_justified']);
 
         return $data;
     }
@@ -273,11 +301,17 @@ class DailyTimeReviewResource extends Resource
         return (int) ($record?->hubstaff_total_seconds ?? 0) > 0;
     }
 
-    private static function lostTimeSeconds(DailyTimeReview $record): int
+    private static function lostTimeSeconds(DailyTimeReview $record, ?int $supervisorAdjustmentSeconds = null): int
     {
+        $trackedSeconds = $record->payrollTrackedSeconds();
+        if ($record->lost_time_source && $supervisorAdjustmentSeconds !== null) {
+            $expected = max((int) $record->expected_hubstaff_seconds, 0);
+            $trackedSeconds = max($expected - max((int) $record->estimated_lost_seconds + $supervisorAdjustmentSeconds, 0), 0);
+        }
+
         return max(
             self::requiredSeconds($record)
-                - (int) $record->hubstaff_total_seconds
+                - $trackedSeconds
                 - (int) $record->paid_time_not_tracked_seconds,
             0,
         );
@@ -325,7 +359,8 @@ class DailyTimeReviewResource extends Resource
         return $record !== null
             && $record->status === 'pendiente'
             && (int) $record->hubstaff_total_seconds > 0
-            && (int) $record->difference_seconds >= 0;
+            && (int) $record->difference_seconds >= 0
+            && ! $record->hasTrackabiTimer();
     }
 
     public static function isClosedPeriod(?DailyTimeReview $record): bool
