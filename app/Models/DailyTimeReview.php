@@ -23,6 +23,8 @@ class DailyTimeReview extends Model
             'supervisor_adjustment_seconds' => 'integer',
             'lost_time_estimate_metadata' => 'array',
             'reviewed_at' => 'datetime',
+            'verified_tracked_seconds' => 'integer',
+            'verified_tracked_at' => 'datetime',
         ];
     }
 
@@ -85,7 +87,7 @@ class DailyTimeReview extends Model
 
     public function payrollTrackedSeconds(): int
     {
-        $raw = max((int) $this->hubstaff_total_seconds, 0);
+        $raw = max((int) ($this->verified_tracked_seconds ?? $this->hubstaff_total_seconds), 0);
         if (! $this->lost_time_source || $raw <= 0) {
             return $raw;
         }

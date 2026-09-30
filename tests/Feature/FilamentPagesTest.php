@@ -329,6 +329,10 @@ class FilamentPagesTest extends TestCase
             ->assertSee('N/D')->assertDontSee('Computables')->assertDontSee('Correcto')->assertDontSee('Hubstaff');
         $this->assertSame(32580, $review->fresh()->hubstaff_total_seconds);
         $this->assertSame(32580, $entry->fresh()->total_seconds);
+        $review->update(['verified_tracked_seconds' => 27000]);
+        $this->actingAs($user)->get("/admin/daily-review-calendar?period_id={$period->id}&employee_id={$employee->id}")
+            ->assertOk()->assertSee('Timer original: 9:03 h')->assertSee('>7:30 h</strong>', false)
+            ->assertSee('>-0:30 h</strong>', false);
         $review->hubstaff_total_seconds = 27000;
         $this->assertSame(27000, $review->computableTrackedSeconds());
         $review->expected_hubstaff_seconds = 0;

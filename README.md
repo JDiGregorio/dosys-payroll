@@ -177,6 +177,10 @@ la estimacion queda en la revision diaria, puede corregirse o justificarse y
 el calculo usa solamente el remanente conforme a las reglas actuales de horas
 ordinarias y extra. Ver [docs/trackabi-historical-loss.md](docs/trackabi-historical-loss.md).
 
+Las horas verificadas y la distribucion de extras de Elalf/Marco en este
+periodo se documentan en
+[docs/september-second-half-time-corrections.md](docs/september-second-half-time-corrections.md).
+
 Analisis historico de solo lectura, por empleado, excluyendo dias con Trackabi,
 fuentes mezcladas y periodos no anteriores al seleccionado:
 

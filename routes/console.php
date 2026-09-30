@@ -11,6 +11,7 @@ use App\Services\PalmettoDebtCollectionsScheduleCorrectionService;
 use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
 use App\Services\SeptemberFirstHalfPayrollCorrectionsService;
+use App\Services\SeptemberSecondHalfTimeCorrectionService;
 use App\Services\TimeParserService;
 use App\Services\Trackabi\HistoricalLostTimeEstimator;
 use App\Services\Trackabi\HistoricalTimeAnalysis;
@@ -21,6 +22,34 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 
 require __DIR__.'/trackabi-direct.php';
+
+Artisan::command('payroll:correct-september-second-half-tracking {--period=9} {--apply : Aplica horas verificadas y recalcula a Elalf y Marco}', function (SeptemberSecondHalfTimeCorrectionService $correction, TimeParserService $parser): int {
+    $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
+    $rows = $correction->preview($period);
+
+    $this->table(['Empleado', 'Fecha', 'Timer importado', 'Verificado', 'Estado', 'Justificado'], $rows->map(fn (array $row): array => [
+        $row['employee'],
+        $row['date'],
+        $parser->secondsToHourMinute($row['raw_seconds']),
+        $parser->secondsToHourMinute($row['verified_seconds']),
+        $row['status'],
+        $parser->secondsToHourMinute($row['justified_seconds']),
+    ])->all());
+    $this->line('Marco: las horas de fin de semana se asignan primero como extra, hasta el saldo de 10 horas de cada semana. El saldo considera horas extra ya pagadas en otros períodos.');
+
+    if (! $this->option('apply')) {
+        $this->info('Vista previa: no se modificaron datos.');
+
+        return self::SUCCESS;
+    }
+
+    $changed = $correction->apply($period);
+    $this->info($changed > 0
+        ? "Horas verificadas actualizadas: {$changed}. Se recalcularon únicamente Elalf y Marco."
+        : 'Las horas verificadas ya estaban aplicadas; no se modificaron datos.');
+
+    return self::SUCCESS;
+})->purpose('Corrige tracking verificado y jornada de Elalf/Marco para el período 9.');
 
 Artisan::command('payroll:estimate-trackabi-loss {--period=9} {--employee= : ID del empleado} {--details : Muestra cada fecha} {--refresh-pending : Recalcula solo propuestas pendientes sin ajustes ni justificaciones} {--apply : Guarda las estimaciones y recalcula; por defecto solo vista previa}', function (HistoricalLostTimeEstimator $estimator, TimeParserService $parser): int {
     $period = PayrollPeriod::query()->find((int) $this->option('period'));

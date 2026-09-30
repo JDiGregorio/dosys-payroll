@@ -382,12 +382,14 @@
                                         @else
                                             @php
                                                 $trackabiTimer = $review->hasTrackabiTimer();
-                                                $displayTracked = $trackabiTimer ? $review->computableTrackedSeconds() : $review->hubstaff_total_seconds;
+                                                $displayTracked = $trackabiTimer
+                                                    ? ($review->verified_tracked_seconds ?? $review->computableTrackedSeconds())
+                                                    : $review->hubstaff_total_seconds;
                                                 $displayDifference = $trackabiTimer ? $displayTracked - $review->expected_hubstaff_seconds : $review->difference_seconds;
                                             @endphp
                                             <div class="dr-event-row">
                                                 <span>{{ DailyTimeReviewResource::timeTrackingLabel($review) }}</span>
-                                                <strong @if ($trackabiTimer) title="Timer original: {{ $timeParser->secondsToHourMinute($review->hubstaff_total_seconds) }} h; mostrado con limite de jornada." @endif>{{ $timeParser->secondsToHourMinute($displayTracked) }} h</strong>
+                                                <strong @if ($trackabiTimer) title="Timer original: {{ $timeParser->secondsToHourMinute($review->hubstaff_total_seconds) }} h; {{ $review->verified_tracked_seconds !== null ? 'tiempo verificado; pagables sujetos al horario y al cupo semanal de extras.' : 'mostrado con limite de jornada.' }}" @endif>{{ $timeParser->secondsToHourMinute($displayTracked) }} h</strong>
                                             </div>
                                             <div class="dr-event-row">
                                                 <span>Pagables</span>

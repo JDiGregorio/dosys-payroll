@@ -106,6 +106,10 @@ class PayrollCalculationService
 
         $review->difference_seconds = (int) $review->hubstaff_total_seconds
             - (int) $review->expected_hubstaff_seconds;
+        if ($review->verified_tracked_seconds !== null) {
+            $review->difference_seconds = (int) $review->verified_tracked_seconds
+                - (int) $review->expected_hubstaff_seconds;
+        }
         if ($employee?->paid_without_tracking) {
             $review->difference_seconds = 0;
         }
@@ -756,6 +760,12 @@ class PayrollCalculationService
 
         $reviews->each(fn (DailyTimeReview $review) => $this->applyScheduleExpectation($review, $employee));
 
+        if (app(SeptemberSecondHalfTimeCorrectionService::class)->isMarcoPeriod($period, $employee)) {
+            $this->redistributeMarcoWeekendOvertime($period, $employee, $reviews);
+
+            return;
+        }
+
         if ($this->isRotatingSchedule($employee)) {
             $weeklyAssignedSeconds = $this->preassignedWeeklySeconds($employee);
             $workDays = max((int) ($employee->rotation_work_days ?: 4), 1);
@@ -874,6 +884,49 @@ class PayrollCalculationService
         $this->applyPeriodSpecificPayrollCorrections($period, $employee);
     }
 
+    private function redistributeMarcoWeekendOvertime(PayrollPeriod $period, Employee $employee, Collection $reviews): void
+    {
+        $weeklyAssignedSeconds = $this->preassignedWeeklySeconds($employee);
+        $rangeStart = $reviews->min(fn (DailyTimeReview $review) => $review->date->copy()->startOfWeek());
+        $rangeEnd = $reviews->max(fn (DailyTimeReview $review) => $review->date->copy()->endOfWeek());
+        $paidOutsidePeriod = DailyTimeReview::query()
+            ->where('employee_id', $employee->id)
+            ->where('payroll_period_id', '!=', $period->id)
+            ->whereBetween('date', [$rangeStart, $rangeEnd])
+            ->get()
+            ->groupBy(fn (DailyTimeReview $review): string => $this->weekKey($review->date))
+            ->map(fn (Collection $days): int => (int) $days->sum('possible_overtime_seconds'));
+
+        $reviews->groupBy(fn (DailyTimeReview $review): string => $this->weekKey($review->date))
+            ->each(function (Collection $weekReviews, string $weekKey) use ($weeklyAssignedSeconds, $paidOutsidePeriod, $employee): void {
+                $remaining = max($weeklyAssignedSeconds - (int) $paidOutsidePeriod->get($weekKey, 0), 0);
+                $weekendDays = $weekReviews->filter(fn (DailyTimeReview $review): bool => $review->date->isWeekend())->sortBy('date')->values();
+                $weekendDays->each(fn (DailyTimeReview $review) => $review->preassigned_overtime_seconds = 0);
+                $payableWeekendDays = $weekendDays->reject(fn (DailyTimeReview $review): bool => $review->paid_day_off)->values();
+                $weekendTracked = (int) $payableWeekendDays->sum(fn (DailyTimeReview $review): int => $review->payrollTrackedSeconds());
+                $weekendBudget = min($weekendTracked, $remaining);
+                $weekendLeft = $weekendBudget;
+
+                foreach ($payableWeekendDays as $index => $review) {
+                    $review->preassigned_overtime_seconds = $index === $payableWeekendDays->count() - 1
+                        ? $weekendLeft
+                        : min((int) floor($weekendBudget * $review->payrollTrackedSeconds() / max($weekendTracked, 1)), $weekendLeft);
+                    $weekendLeft -= (int) $review->preassigned_overtime_seconds;
+                }
+                $remaining -= $weekendBudget;
+
+                foreach ($weekReviews->filter(fn (DailyTimeReview $review): bool => ! $review->date->isWeekend())->sortBy('date') as $review) {
+                    $available = $review->paid_day_off ? 0 : max($review->payrollTrackedSeconds() - (int) $review->expected_ordinary_seconds, 0);
+                    $review->preassigned_overtime_seconds = min($available, $remaining);
+                    $remaining -= (int) $review->preassigned_overtime_seconds;
+                }
+
+                foreach ($weekReviews as $review) {
+                    $this->calculateDailyReview($review, $employee);
+                }
+            });
+    }
+
     private function applyPeriodSpecificPayrollCorrections(PayrollPeriod $period, Employee $employee): void
     {
         app(JulySecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
@@ -989,6 +1042,8 @@ class PayrollCalculationService
         $review->expected_paid_seconds = $expectedPaidSeconds;
         $review->expected_hubstaff_seconds = $expectedHubstaffSeconds;
         $review->paid_time_not_tracked_seconds = (int) $expectation['paid_time_not_tracked_seconds'];
+
+        app(SeptemberSecondHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
     }
 
     private function isRotatingSchedule(Employee $employee): bool
@@ -1043,6 +1098,10 @@ class PayrollCalculationService
             'lost_time_source',
             'lost_time_estimate_metadata',
             'reviewed_at',
+            'verified_tracked_seconds',
+            'verified_tracked_source',
+            'verified_tracked_note',
+            'verified_tracked_at',
         ];
 
         return DailyTimeReview::query()
@@ -1063,6 +1122,8 @@ class PayrollCalculationService
     private function normalizedManualReviewState(DailyTimeReview $review, array $fields): array
     {
         $state = $review->only($fields);
+        $state['reviewed_at'] = $review->reviewed_at?->toDateTimeString();
+        $state['verified_tracked_at'] = $review->verified_tracked_at?->toDateTimeString();
 
         if ($review->paid_day_off || $this->isPayableUnscheduledWork($review)) {
             $state['justified_absence_seconds'] = 0;
