@@ -25,7 +25,7 @@
 
     $bonusRows = [
         ['Total horas extra', $result->overtime_amount, true],
-        ['Bonos extra cliente', $result->extra_bonuses_amount, true],
+        ...app(\App\Services\PayrollVoucherBonusPresenter::class)->extraBonusRows($result),
         ['Subsidio por internet', $result->internet_subsidy_amount, (float) $result->internet_subsidy_amount !== 0.0],
         ['Bono QA', $result->qa_bonus_amount, (float) $result->qa_bonus_amount !== 0.0],
         ['Bono de Productividad', $result->productivity_bonus_amount, true],
