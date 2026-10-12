@@ -127,7 +127,7 @@ class TrackabiInsightsCsvImportTest extends TestCase
             ->assertOk()
             ->assertSee('Trackabi')
             ->assertSee('6:44 h')
-            ->assertSee('1:16 h');
+            ->assertSee('-1:16 h');
 
         $this->get("/admin/daily-time-reviews/{$review->id}/edit")
             ->assertOk()
@@ -152,8 +152,26 @@ class TrackabiInsightsCsvImportTest extends TestCase
             ->get("/admin/daily-review-calendar?period_id={$this->period->id}&employee_id={$this->employee->id}")
             ->assertOk()
             ->assertSee('7:22 h')
-            ->assertSee('0:38 h')
+            ->assertSee('-0:38 h')
             ->assertDontSee('Idle');
+    }
+
+    public function test_zero_activity_day_remains_sin_registro_and_links_to_review(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH', 'email' => 'rrhh-zero-activity@example.com',
+            'password' => 'password', 'profile' => 'rrhh', 'active' => true,
+        ]);
+        $review = $this->review();
+        $review->update(['hubstaff_total_seconds' => 0]);
+        $path = $this->csv("\"Aguilar, Dereck\",00:00,00:00,00:00,00:00\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
+
+        $this->actingAs($user)
+            ->get("/admin/daily-review-calendar?period_id={$this->period->id}&employee_id={$this->employee->id}")
+            ->assertOk()
+            ->assertSee('Sin registro')
+            ->assertSee("/admin/daily-time-reviews/{$review->id}/edit");
     }
 
     public function test_shortfall_at_or_below_lunch_break_is_left_for_supervisor_review(): void

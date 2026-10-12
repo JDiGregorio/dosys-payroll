@@ -349,15 +349,15 @@
                                 $insidePeriod = $this->isInsidePeriod($day);
                                 $hasHubstaff = (int) ($review?->hubstaff_total_seconds ?? 0) > 0;
                                 $activity = $directPeriod ? $review?->trackabiActivity : null;
-                                $hasActivity = $activity !== null;
+                                $hasActivity = (int) ($activity?->measured_activity_seconds ?? 0) > 0;
                                 $isOff = (bool) ($review?->paid_day_off ?? false);
-                                $isJustifiedAbsence = $review && ! $hasHubstaff && (int) $review->justified_absence_seconds >= (int) $review->expected_seconds && (int) $review->expected_seconds > 0;
+                                $isJustifiedAbsence = $review && ! $hasHubstaff && ! $hasActivity && (int) $review->justified_absence_seconds >= (int) $review->expected_seconds && (int) $review->expected_seconds > 0;
                                 $isCorrectPending = $this->isCorrectPendingReview($review);
                                 $eventClass = match (true) {
                                     $isCorrectPending => 'dr-event-ok',
                                     $isOff => 'dr-event-ok',
                                     $isJustifiedAbsence => 'dr-event-review',
-                                    $review && ! $hasHubstaff => '',
+                                    $review && ! $hasHubstaff && ! $hasActivity => '',
                                     default => match ($review?->status) {
                                     'aprobado_rrhh' => 'dr-event-ok',
                                     'revisado_supervisor' => 'dr-event-review',
@@ -411,11 +411,11 @@
                                                         ? ($review->verified_tracked_seconds ?? $review->computableTrackedSeconds())
                                                         : $review->hubstaff_total_seconds);
                                                 $displayDifference = $directPeriod
-                                                    ? ($displayTracked !== null ? max((int) $review->expected_paid_seconds - $displayTracked, 0) : null)
+                                                    ? ($displayTracked !== null ? $displayTracked - (int) $review->expected_paid_seconds : null)
                                                     : ($trackabiTimer ? $displayTracked - $review->expected_hubstaff_seconds : $review->difference_seconds);
                                             @endphp
                                             <div class="dr-event-row">
-                                                <span>{{ $directPeriod ? 'Día' : $this->timeTrackingLabel($review) }}</span>
+                                                <span>{{ $directPeriod ? 'Esperado' : $this->timeTrackingLabel($review) }}</span>
                                                 <strong @if ($trackabiTimer && ! $directPeriod) title="Timer original: {{ $this->hours($review->hubstaff_total_seconds) }} h; {{ $review->verified_tracked_seconds !== null ? 'tiempo verificado; pagables sujetos al horario y al cupo semanal de extras.' : 'mostrado con limite de jornada.' }}" @endif>{{ $directPeriod ? $this->hours((int) $review->expected_paid_seconds).' h' : $this->hours($displayTracked).' h' }}</strong>
                                             </div>
                                             @if ($directPeriod)
