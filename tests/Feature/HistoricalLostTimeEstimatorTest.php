@@ -19,6 +19,18 @@ class HistoricalLostTimeEstimatorTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_historical_estimation_is_rejected_after_direct_cutover(): void
+    {
+        config(['trackabi_direct.cutover_date' => '2026-09-26']);
+        $period = PayrollPeriod::create(['name' => 'Direct', 'starts_at' => '2026-09-26',
+            'ends_at' => '2026-10-10', 'status' => 'borrador']);
+        $estimator = app(HistoricalLostTimeEstimator::class);
+
+        $this->assertCount(0, $estimator->plan($period));
+        $this->expectExceptionMessage('La estimación histórica no se permite después del cutover');
+        $estimator->apply($period, collect());
+    }
+
     public function test_estimate_is_provisional_irregular_audited_and_survives_recalculation(): void
     {
         $history = PayrollPeriod::create(['name' => 'Hubstaff history', 'starts_at' => '2026-08-10', 'ends_at' => '2026-08-21']);

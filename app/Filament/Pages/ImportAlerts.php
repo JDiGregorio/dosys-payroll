@@ -6,6 +6,7 @@ use App\Filament\Resources\DailyTimeReviews\DailyTimeReviewResource;
 use App\Models\DailyTimeReview;
 use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
+use App\Models\TrackingImportAlert;
 use Filament\Pages\Page;
 use Filament\Support\Icons\Heroicon;
 use Illuminate\Database\Eloquent\Builder;
@@ -84,9 +85,24 @@ class ImportAlerts extends Page
     public function highIdleDays(): Collection
     {
         return $this->visibleReviewsQuery()
-            ->where('hubstaff_idle_seconds', '>', 180)
+            ->where('hubstaff_idle_seconds', '>', 1800)
             ->orderBy('date')
             ->orderBy('employee_id')
+            ->limit(50)
+            ->get();
+    }
+
+    public function directImportAlerts(): Collection
+    {
+        if (! $this->periodId || ! auth()->user()?->isRrhh()) {
+            return collect();
+        }
+
+        return TrackingImportAlert::query()
+            ->where('payroll_period_id', $this->periodId)
+            ->where('source_provider', 'trackabi_api')
+            ->where('resolved', false)
+            ->latest()
             ->limit(50)
             ->get();
     }

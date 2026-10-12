@@ -5,6 +5,7 @@ namespace App\Filament\Resources\DailyTimeReviews\Pages;
 use App\Filament\Pages\DailyReviewCalendar;
 use App\Filament\Resources\DailyTimeReviews\DailyTimeReviewResource;
 use App\Services\PayrollCalculationService;
+use App\Services\Trackabi\TrackabiActivityCoverageService;
 use Filament\Actions\Action;
 use Filament\Resources\Pages\EditRecord;
 
@@ -14,7 +15,7 @@ class EditDailyTimeReview extends EditRecord
 
     protected function getHeaderActions(): array
     {
-        return [];
+        return [DailyTimeReviewResource::reviewTrackabiActivityAction()];
     }
 
     protected function getFormActions(): array
@@ -43,6 +44,7 @@ class EditDailyTimeReview extends EditRecord
         $service = app(PayrollCalculationService::class);
         $service->recalculateDailyReview($this->record);
         $service->recalculateEmployeePayrollResult($this->record->payrollPeriod, $this->record->employee);
+        app(TrackabiActivityCoverageService::class)->reconcileEmployee($this->record->payrollPeriod, $this->record->employee);
     }
 
     protected function getRedirectUrl(): ?string

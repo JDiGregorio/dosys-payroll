@@ -6,6 +6,7 @@ use App\Filament\Resources\DailyTimeReviews\DailyTimeReviewResource;
 use App\Models\DailyTimeReview;
 use App\Models\Employee;
 use App\Models\PayrollPeriod;
+use App\Models\TrackabiDailyActivity;
 use App\Services\TimeParserService;
 use App\Support\TimeTrackingSource;
 use Carbon\Carbon;
@@ -121,12 +122,24 @@ class DailyReviewCalendar extends Page
             return collect();
         }
 
-        return DailyTimeReview::query()
+        $reviews = DailyTimeReview::query()
             ->with('employee.campaign')
             ->where('payroll_period_id', $this->periodId)
             ->where('employee_id', $this->employeeId)
+            ->get();
+        $activities = TrackabiDailyActivity::query()
+            ->where('payroll_period_id', $this->periodId)
+            ->where('employee_id', $this->employeeId)
+            ->whereIn('activity_date', $reviews->map(fn (DailyTimeReview $review) => $review->date->toDateString()))
             ->get()
-            ->keyBy(fn (DailyTimeReview $review) => $review->date->toDateString());
+            ->keyBy(fn (TrackabiDailyActivity $activity) => $activity->activity_date->toDateString());
+
+        return $reviews->mapWithKeys(function (DailyTimeReview $review) use ($activities): array {
+            $date = $review->date->toDateString();
+            $review->setRelation('trackabiActivity', $activities->get($date));
+
+            return [$date => $review];
+        });
     }
 
     public function reviewUrl(DailyTimeReview $review): string

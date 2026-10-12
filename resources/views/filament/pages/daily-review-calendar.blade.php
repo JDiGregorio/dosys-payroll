@@ -328,6 +328,8 @@
 
         @php
             $reviewsByDate = $this->reviewsByDate();
+            $selectedPeriod = $this->selectedPeriod();
+            $directPeriod = $selectedPeriod && app(\App\Services\Trackabi\TrackabiActivityCoverageService::class)->applies($selectedPeriod);
         @endphp
 
         <div class="dr-calendar-shell" wire:key="daily-review-calendar-{{ $periodId }}-{{ $employeeId }}">
@@ -346,6 +348,8 @@
                                 $review = $reviewsByDate->get($key);
                                 $insidePeriod = $this->isInsidePeriod($day);
                                 $hasHubstaff = (int) ($review?->hubstaff_total_seconds ?? 0) > 0;
+                                $activity = $directPeriod ? $review?->trackabiActivity : null;
+                                $hasActivity = $activity !== null;
                                 $isOff = (bool) ($review?->paid_day_off ?? false);
                                 $isJustifiedAbsence = $review && ! $hasHubstaff && (int) $review->justified_absence_seconds >= (int) $review->expected_seconds && (int) $review->expected_seconds > 0;
                                 $isCorrectPending = $this->isCorrectPendingReview($review);
@@ -378,7 +382,7 @@
                                         <span class="dr-month">{{ $day->translatedFormat('M') }}</span>
                                     </div>
 
-                                    <span class="dr-badge {{ $badgeClass }}">{{ $this->reviewStatusLabel($review) }}</span>
+                                    <span class="dr-badge {{ $badgeClass }}">{{ $review?->lost_time_source === 'missing_activity' ? 'Sin Insights' : $this->reviewStatusLabel($review) }}</span>
                                 </div>
 
                                 @if ($review)
@@ -393,7 +397,7 @@
                                                 <span>Justificado</span>
                                                 <strong></strong>
                                             </div>
-                                        @elseif (! $hasHubstaff)
+                                        @elseif (! $hasHubstaff && ! $hasActivity)
                                             <div class="dr-event-row">
                                                 <span>Sin registro</span>
                                                 <strong></strong>
@@ -401,26 +405,32 @@
                                         @else
                                             @php
                                                 $trackabiTimer = $review->hasTrackabiTimer();
-                                                $displayTracked = $trackabiTimer
-                                                    ? ($review->verified_tracked_seconds ?? $review->computableTrackedSeconds())
-                                                    : $review->hubstaff_total_seconds;
-                                                $displayDifference = $trackabiTimer ? $displayTracked - $review->expected_hubstaff_seconds : $review->difference_seconds;
+                                                $displayTracked = $directPeriod
+                                                    ? app(\App\Services\Trackabi\TrackabiPaidActivityService::class)->creditedMeasuredSeconds($review)
+                                                    : ($trackabiTimer
+                                                        ? ($review->verified_tracked_seconds ?? $review->computableTrackedSeconds())
+                                                        : $review->hubstaff_total_seconds);
+                                                $displayDifference = $directPeriod
+                                                    ? ($displayTracked !== null ? max((int) $review->expected_paid_seconds - $displayTracked, 0) : null)
+                                                    : ($trackabiTimer ? $displayTracked - $review->expected_hubstaff_seconds : $review->difference_seconds);
                                             @endphp
                                             <div class="dr-event-row">
-                                                <span>{{ $this->timeTrackingLabel($review) }}</span>
-                                                <strong @if ($trackabiTimer) title="Timer original: {{ $this->hours($review->hubstaff_total_seconds) }} h; {{ $review->verified_tracked_seconds !== null ? 'tiempo verificado; pagables sujetos al horario y al cupo semanal de extras.' : 'mostrado con limite de jornada.' }}" @endif>{{ $this->hours($displayTracked) }} h</strong>
+                                                <span>{{ $directPeriod ? 'Día' : $this->timeTrackingLabel($review) }}</span>
+                                                <strong @if ($trackabiTimer && ! $directPeriod) title="Timer original: {{ $this->hours($review->hubstaff_total_seconds) }} h; {{ $review->verified_tracked_seconds !== null ? 'tiempo verificado; pagables sujetos al horario y al cupo semanal de extras.' : 'mostrado con limite de jornada.' }}" @endif>{{ $directPeriod ? $this->hours((int) $review->expected_paid_seconds).' h' : $this->hours($displayTracked).' h' }}</strong>
                                             </div>
+                                            @if ($directPeriod)
+                                            <div class="dr-event-row">
+                                                <span>Trackabi</span>
+                                                <strong>{{ $displayTracked !== null ? $this->hours($displayTracked).' h' : 'N/D' }}</strong>
+                                            </div>
+                                            @endif
                                             <div class="dr-event-row">
                                                 <span>Pagables</span>
                                                 <strong>{{ $this->hours($review->payable_seconds) }} h</strong>
                                             </div>
                                             <div class="dr-event-row">
-                                                <span>Idle</span>
-                                                <strong>{{ $trackabiTimer ? 'N/D' : $this->hours($review->hubstaff_idle_seconds).' h' }}</strong>
-                                            </div>
-                                            <div class="dr-event-row">
                                                 <span>Dif.</span>
-                                                <strong>{{ $this->hours($displayDifference) }} h</strong>
+                                                <strong>{{ $displayDifference === null ? 'N/D' : $this->hours($displayDifference).' h' }}</strong>
                                             </div>
                                         @endif
                                     </a>

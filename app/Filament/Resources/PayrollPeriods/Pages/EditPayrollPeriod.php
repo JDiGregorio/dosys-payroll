@@ -16,6 +16,9 @@ class EditPayrollPeriod extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            PayrollPeriodResource::importTrackabiAction(),
+            PayrollPeriodResource::previewTrackabiInsightsAction(),
+            PayrollPeriodResource::confirmTrackabiInsightsAction(),
             PayrollPeriodResource::importHubstaffAction(),
             PayrollPeriodResource::mapHubstaffEmployeeAction(),
             PayrollPeriodResource::recalculatePayrollAction(),

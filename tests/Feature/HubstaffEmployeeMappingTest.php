@@ -77,6 +77,8 @@ class HubstaffEmployeeMappingTest extends TestCase
 
     public function test_rrhh_can_map_an_employee_from_the_period_edit_action(): void
     {
+        config(['trackabi.hubstaff_import_enabled' => true]);
+
         $user = User::query()->create([
             'name' => 'RRHH Mapping',
             'email' => 'rrhh-mapping@example.com',
@@ -106,10 +108,11 @@ class HubstaffEmployeeMappingTest extends TestCase
         $this->actingAs($user);
 
         Livewire::test(EditPayrollPeriod::class, ['record' => $period->getRouteKey()])
-            ->callAction('mapHubstaffEmployee', [
-                'hubstaff_member' => 'Nombre pendiente',
-                'employee_id' => $employee->id,
-            ])
+            ->mountAction('mapHubstaffEmployee')
+            ->set('mountedActions.0.data.hubstaff_member', 'Nombre pendiente')
+            ->set('mountedActions.0.data.employee_id', $employee->id)
+            ->callMountedAction()
+            ->assertHasNoActionErrors()
             ->assertNotified();
 
         $this->assertDatabaseHas('hubstaff_time_entries', [

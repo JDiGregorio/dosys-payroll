@@ -16,7 +16,11 @@ use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
 use App\Services\HubstaffEmployeeMappingService;
 use App\Services\PayrollCalculationService;
+use App\Services\Trackabi\TrackabiActivityCoverageService;
+use App\Services\Trackabi\TrackabiDirectImportService;
+use App\Services\Trackabi\TrackabiInsightsCsvImportService;
 use BackedEnum;
+use Carbon\Carbon;
 use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -140,6 +144,16 @@ class PayrollPeriodResource extends Resource
                 FileUpload::make('file')->label('Archivo CSV')->required()->acceptedFileTypes(['text/csv', 'text/plain']),
             ])
             ->action(function (PayrollPeriod $record, array $data, PayrollCalculationService $service): void {
+                if (! config('trackabi.hubstaff_import_enabled')
+                    || ! in_array($record->fresh()->status, ['borrador', 'importado', 'en_revision'], true)
+                    || (config('trackabi_direct.cutover_date')
+                        && $record->ends_at->toDateString() >= config('trackabi_direct.cutover_date'))
+                    || $record->hubstaffTimeEntries()->where('active', true)
+                        ->where(fn ($query) => $query->whereNull('source_provider')
+                            ->orWhere('source_provider', '!=', 'hubstaff_csv'))->exists()) {
+                    throw new \RuntimeException('La importación CSV de Hubstaff está deshabilitada para este período.');
+                }
+
                 $import = HubstaffImport::query()->create([
                     'payroll_period_id' => $record->id,
                     'original_filename' => basename((string) $data['file']),
@@ -151,6 +165,7 @@ class PayrollPeriodResource extends Resource
                     DB::transaction(function () use ($record, $data, $import, $service): void {
                         $previousEntryIds = $record->hubstaffTimeEntries()
                             ->where('active', true)
+                            ->where('source_provider', 'hubstaff_csv')
                             ->pluck('id');
 
                         Excel::import(
@@ -174,7 +189,113 @@ class PayrollPeriodResource extends Resource
                 }
             })
             ->visible(fn (PayrollPeriod $record) => (auth()->user()?->isRrhh() ?? false)
-                && $record->status !== 'cerrado');
+                && config('trackabi.hubstaff_import_enabled')
+                && in_array($record->status, ['borrador', 'importado', 'en_revision'], true)
+                && (! config('trackabi_direct.cutover_date')
+                    || $record->ends_at->toDateString() < config('trackabi_direct.cutover_date')));
+    }
+
+    public static function importTrackabiAction(): Action
+    {
+        return Action::make('importTrackabi')
+            ->label('Importar Trackabi')
+            ->icon('heroicon-o-arrow-down-tray')
+            ->requiresConfirmation()
+            ->modalHeading('Importar Trackabi API directa')
+            ->modalSubmitActionLabel('Confirmar importación')
+            ->modalWidth('4xl')
+            ->modalContent(fn (PayrollPeriod $record) => view('filament.resources.payroll-periods.trackabi-import-preview', [
+                'plan' => app(TrackabiDirectImportService::class)->preview($record),
+            ]))
+            ->action(function (PayrollPeriod $record): void {
+                $plan = app(TrackabiDirectImportService::class)->import($record);
+                Notification::make()
+                    ->title('Trackabi importado')
+                    ->body("{$plan['written']} registros, {$plan['affected_employees']} empleados recalculados.")
+                    ->success()->send();
+            })
+            ->visible(fn (PayrollPeriod $record) => (auth()->user()?->isRrhh() ?? false)
+                && config('trackabi.provider') === 'direct'
+                && in_array($record->status, ['borrador', 'importado', 'en_revision'], true)
+                && config('trackabi_direct.cutover_date')
+                && $record->starts_at->toDateString() >= config('trackabi_direct.cutover_date'));
+    }
+
+    public static function previewTrackabiInsightsAction(): Action
+    {
+        return Action::make('previewTrackabiInsights')
+            ->label('Importar actividad Trackabi')
+            ->icon('heroicon-o-document-arrow-up')
+            ->form([
+                DatePicker::make('activity_date')->label('Fecha del reporte (un solo día)')->required(),
+                FileUpload::make('file')->label('CSV Insights Staff Summary')->disk('local')
+                    ->directory('trackabi-insights')->acceptedFileTypes(['text/csv', 'text/plain', 'application/vnd.ms-excel'])
+                    ->maxSize(10240)->required(),
+            ])
+            ->modalSubmitActionLabel('Ver vista previa')
+            ->action(function (PayrollPeriod $record, array $data): void {
+                $path = Storage::disk('local')->path($data['file']);
+                $plan = app(TrackabiInsightsCsvImportService::class)->preview($record, Carbon::parse($data['activity_date']), $path);
+                session()->put('trackabi_insights_preview_'.$record->id, [
+                    'date' => $plan['date'], 'file' => $data['file'], 'hash' => $plan['file_hash'],
+                ]);
+                Notification::make()->title('Vista previa lista')
+                    ->body("{$plan['employees_matched']} empleados, ".count($plan['employees_unmatched']).' sin mapeo, '.count($plan['errors']).' errores. Revisa y confirma con la acción siguiente.')
+                    ->warning()->send();
+            })
+            ->visible(fn (PayrollPeriod $record) => (auth()->user()?->isRrhh() ?? false)
+                && config('trackabi.provider') === 'direct'
+                && in_array($record->status, ['borrador', 'importado', 'en_revision'], true)
+                && $record->starts_at->toDateString() >= (string) config('trackabi_direct.cutover_date'));
+    }
+
+    public static function confirmTrackabiInsightsAction(): Action
+    {
+        return Action::make('confirmTrackabiInsights')
+            ->label('Confirmar actividad Trackabi')
+            ->icon('heroicon-o-check')
+            ->requiresConfirmation()
+            ->modalWidth('4xl')
+            ->modalSubmitAction(function (Action $action, PayrollPeriod $record): Action {
+                $preview = session('trackabi_insights_preview_'.$record->id);
+                if (! is_array($preview)) {
+                    return $action->disabled();
+                }
+                $plan = app(TrackabiInsightsCsvImportService::class)->preview(
+                    $record, Carbon::parse($preview['date']), Storage::disk('local')->path($preview['file']),
+                );
+
+                return $action->disabled($plan['employees_unmatched'] !== [] || $plan['errors'] !== [] || $plan['rows_count'] === 0);
+            })
+            ->modalContent(function (PayrollPeriod $record) {
+                $preview = session('trackabi_insights_preview_'.$record->id);
+                if (! is_array($preview)) {
+                    return view('filament.resources.payroll-periods.trackabi-insights-preview', ['plan' => null]);
+                }
+                $plan = app(TrackabiInsightsCsvImportService::class)->preview(
+                    $record, Carbon::parse($preview['date']), Storage::disk('local')->path($preview['file']),
+                );
+
+                return view('filament.resources.payroll-periods.trackabi-insights-preview', ['plan' => $plan]);
+            })
+            ->action(function (PayrollPeriod $record): void {
+                $preview = session('trackabi_insights_preview_'.$record->id);
+                if (! is_array($preview)) {
+                    throw new \RuntimeException('Primero genera la vista previa del CSV.');
+                }
+                $path = Storage::disk('local')->path($preview['file']);
+                if (hash_file('sha256', $path) !== $preview['hash']) {
+                    throw new \RuntimeException('El archivo cambió después de la vista previa.');
+                }
+                $result = app(TrackabiInsightsCsvImportService::class)->import($record, Carbon::parse($preview['date']), $path);
+                session()->forget('trackabi_insights_preview_'.$record->id);
+                Notification::make()->title('Actividad Trackabi importada')
+                    ->body("{$result['written']} filas; {$result['reviews_updated']} revisiones pendientes actualizadas.")
+                    ->success()->send();
+            })
+            ->visible(fn (PayrollPeriod $record) => (auth()->user()?->isRrhh() ?? false)
+                && in_array($record->status, ['borrador', 'importado', 'en_revision'], true)
+                && is_array(session('trackabi_insights_preview_'.$record->id)));
     }
 
     private static function generateReviewsAction(): Action
@@ -260,6 +381,7 @@ class PayrollPeriodResource extends Resource
                     ->send();
             })
             ->visible(fn (PayrollPeriod $record) => (auth()->user()?->isRrhh() ?? false)
+                && config('trackabi.hubstaff_import_enabled')
                 && $record->status !== 'cerrado'
                 && HubstaffTimeEntry::query()
                     ->where('payroll_period_id', $record->id)
@@ -308,6 +430,15 @@ class PayrollPeriodResource extends Resource
                 }
 
                 $service->recalculatePeriodPreservingManual($record);
+
+                $summary = app(TrackabiActivityCoverageService::class)->summary($record);
+                if ($summary['missing'] > 0 || $summary['legacy_historical'] > 0) {
+                    Notification::make()->title('No se puede cerrar: actividad Trackabi pendiente de resolver')
+                        ->body('Esperados: '.$summary['expected'].'; disponibles: '.$summary['available'].'; actividad cero: '.$summary['zero'].'; faltantes: '.$summary['missing'].'; revisiones históricas pendientes de reemplazo: '.$summary['legacy_historical'].'.')
+                        ->danger()->send();
+
+                    return;
+                }
 
                 $record->update(['status' => 'cerrado']);
                 Notification::make()->title('Período cerrado')->success()->send();

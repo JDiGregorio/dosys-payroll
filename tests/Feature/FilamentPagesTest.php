@@ -45,6 +45,19 @@ class FilamentPagesTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_employee_form_exposes_individual_payment_without_tracking(): void
+    {
+        $user = User::query()->create([
+            'name' => 'RRHH', 'email' => 'rrhh-tracking@example.com',
+            'password' => 'password', 'profile' => 'rrhh', 'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->get('/admin/employees/create')
+            ->assertOk()
+            ->assertSee('Pago sin registro de tiempo');
+    }
+
     public function test_admin_pages_render_for_authenticated_user(): void
     {
         $user = User::query()->create([
@@ -319,14 +332,14 @@ class FilamentPagesTest extends TestCase
         $entry = HubstaffTimeEntry::create(['employee_id' => $employee->id, 'payroll_period_id' => $period->id,
             'date' => '2026-09-16', 'hubstaff_member' => $employee->name, 'source_provider' => 'trackabi',
             'total_seconds' => 32580, 'active' => true]);
-        $this->assertSame('Trackabi', DailyTimeReviewResource::timeTrackingLabel($review));
+        $this->assertSame('Trackabi histórico', DailyTimeReviewResource::timeTrackingLabel($review));
         $this->assertFalse(DailyTimeReviewResource::isCorrectPendingReview($review));
         $this->assertSame(28800, $review->computableTrackedSeconds());
         $this->actingAs($user)->get("/admin/daily-review-calendar?period_id={$period->id}&employee_id={$employee->id}")
-            ->assertOk()->assertSee('Trackabi')->assertSee('Pagables')->assertSee('Idle')->assertSee('Sin revisión')
+            ->assertOk()->assertSee('Trackabi')->assertSee('Pagables')->assertSee('Sin revisión')
             ->assertSee('Timer original: 9:03 h')->assertSee('>8:00 h</strong>', false)
             ->assertSee('>0:00 h</strong>', false)->assertDontSee('>1:03 h</strong>', false)
-            ->assertSee('N/D')->assertDontSee('Computables')->assertDontSee('Correcto')->assertDontSee('Hubstaff');
+            ->assertDontSee('>Idle</span>', false)->assertDontSee('Computables')->assertDontSee('Correcto')->assertDontSee('Hubstaff');
         $this->assertSame(32580, $review->fresh()->hubstaff_total_seconds);
         $this->assertSame(32580, $entry->fresh()->total_seconds);
         $review->update(['verified_tracked_seconds' => 27000]);
@@ -581,6 +594,8 @@ class FilamentPagesTest extends TestCase
 
     public function test_import_alerts_show_only_pending_reviews_for_supervisor(): void
     {
+        config(['trackabi.hubstaff_import_enabled' => true]);
+
         $supervisor = User::query()->create([
             'name' => 'Supervisor Alerts',
             'email' => 'supervisor-alerts@example.com',
@@ -633,8 +648,8 @@ class FilamentPagesTest extends TestCase
             'date' => '2026-06-02',
             'expected_seconds' => 28800,
             'payable_seconds' => 28800,
-            'hubstaff_idle_seconds' => 240,
-            'unjustified_idle_seconds' => 240,
+            'hubstaff_idle_seconds' => 1860,
+            'unjustified_idle_seconds' => 1860,
         ]);
         DailyTimeReview::query()->create([
             'payroll_period_id' => $period->id,
@@ -660,9 +675,9 @@ class FilamentPagesTest extends TestCase
 
         $component = Livewire::test(ImportAlerts::class)
             ->assertSee('Días con horas pagables menores a las esperadas')
-            ->assertSee('Días con idle mayor a 3 minutos')
+            ->assertSee('Días con idle mayor a 30 minutos')
             ->assertDontSee('Días con horas pagables menores a las esperadas Justificados')
-            ->assertDontSee('Días con idle mayor a 3 minutos Justificados')
+            ->assertDontSee('Días con idle mayor a 30 minutos Justificados')
             ->assertDontSee('Empleados Hubstaff sin mapeo')
             ->assertDontSee('Alerta Ajena');
 
@@ -799,9 +814,29 @@ class FilamentPagesTest extends TestCase
 
         $this->get("/admin/payroll-periods/{$period->id}/edit")
             ->assertOk()
-            ->assertSee('Reemplazar CSV de Hubstaff')
-            ->assertSee('Mapear empleado Hubstaff')
+            ->assertDontSee('Reemplazar CSV de Hubstaff')
+            ->assertDontSee('Mapear empleado Hubstaff')
             ->assertSee('Actualizar cálculos del período');
+    }
+
+    public function test_direct_trackabi_is_the_only_import_action_for_new_periods(): void
+    {
+        config(['trackabi.provider' => 'direct', 'trackabi.hubstaff_import_enabled' => false,
+            'trackabi_direct.cutover_date' => '2026-09-26']);
+        $user = User::query()->create([
+            'name' => 'RRHH Direct', 'email' => 'rrhh-direct@example.com',
+            'password' => 'password', 'profile' => 'rrhh', 'active' => true,
+        ]);
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Directo', 'starts_at' => '2026-09-26', 'ends_at' => '2026-10-10',
+            'status' => 'borrador',
+        ]);
+
+        $this->actingAs($user)->get("/admin/payroll-periods/{$period->id}/edit")
+            ->assertOk()
+            ->assertSee('Importar Trackabi')
+            ->assertDontSee('Importar CSV de Hubstaff')
+            ->assertDontSee('Reemplazar CSV de Hubstaff');
     }
 
     public function test_payroll_results_index_hides_internal_schedule_calculation_columns(): void

@@ -15,6 +15,7 @@ use App\Services\SeptemberSecondHalfTimeCorrectionService;
 use App\Services\TimeParserService;
 use App\Services\Trackabi\HistoricalLostTimeEstimator;
 use App\Services\Trackabi\HistoricalTimeAnalysis;
+use App\Services\Trackabi\TrackabiDirectImportService;
 use App\Services\Trackabi\TrackabiImportService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Inspiring;
@@ -219,8 +220,69 @@ Artisan::command(
 )->purpose('Recalcula un período sin sobrescribir información manual.');
 
 Artisan::command(
-    'trackabi:import {--period= : ID del período de planilla} {--campaign=Palmetto : Campaña/proyecto de Trackabi} {--from= : Fecha inicial YYYY-MM-DD} {--to= : Fecha final YYYY-MM-DD} {--dry-run : Solo muestra vista previa} {--commit : Guarda los registros y recalcula empleados afectados} {--prefer-trackabi-on-conflict : En overlaps Hubstaff/Trackabi, usa Trackabi y desactiva Hubstaff} {--estimate-palmetto-real-time : Capa Trackabi al horario esperado y descuenta pérdida histórica estimada} {--estimated-loss-max-minutes=28 : Límite máximo de pérdida histórica por día}',
-    function (TrackabiImportService $service, TimeParserService $parser): int {
+    'trackabi:import {--period= : ID del período de planilla} {--campaign=all : Campaña o all} {--from= : Fecha inicial YYYY-MM-DD} {--to= : Fecha final YYYY-MM-DD} {--dry-run : Solo muestra vista previa} {--commit : Guarda los registros y recalcula empleados afectados} {--prefer-trackabi-on-conflict : Solo importador legacy} {--estimate-palmetto-real-time : Solo importador legacy} {--estimated-loss-max-minutes=28 : Solo importador legacy}',
+    function (TrackabiImportService $service, TrackabiDirectImportService $direct, TimeParserService $parser): int {
+        if (config('trackabi.provider') === 'direct') {
+            if ($this->option('prefer-trackabi-on-conflict') || $this->option('estimate-palmetto-real-time')) {
+                $this->error('Las opciones legacy de MindCloud no se admiten con la API directa.');
+
+                return self::FAILURE;
+            }
+
+            $period = PayrollPeriod::query()->find((int) $this->option('period'));
+            if (! $period) {
+                $this->error('Indica un período válido con --period=ID.');
+
+                return self::FAILURE;
+            }
+            if ($this->option('dry-run') && $this->option('commit')) {
+                $this->error('Usa --dry-run o --commit, no ambos.');
+
+                return self::FAILURE;
+            }
+
+            try {
+                $from = $this->option('from') ? Carbon::parse((string) $this->option('from')) : null;
+                $to = $this->option('to') ? Carbon::parse((string) $this->option('to')) : null;
+                $plan = $this->option('dry-run')
+                    ? $direct->preview($period, $this->option('campaign'), $from, $to)
+                    : $direct->import($period, $this->option('campaign'), $from, $to);
+            } catch (Throwable $exception) {
+                $this->error($exception->getMessage());
+
+                return self::FAILURE;
+            }
+
+            $this->info('Trackabi API directa: '.($this->option('dry-run') ? 'vista previa' : 'importación aplicada'));
+            $this->line("Período #{$plan['period_id']}: {$plan['from']} a {$plan['to']}; campaña {$plan['campaign']}.");
+            $this->line("Entradas API: {$plan['api_entries']}; empleados mapeados: {$plan['employees_matched']}.");
+            $this->line('Tiempo logged: '.$parser->secondsToHourMinuteSecond($plan['total_logged_seconds']));
+            $this->line("Insertar: {$plan['would_insert']}; actualizar: {$plan['would_update']}; omitir por revisión: {$plan['would_skip']}.");
+            $this->line('Logged time nulo: '.$plan['missing_logged_time']);
+            $this->line('Logged time sospechoso (omitido): '.count($plan['suspicious_entries']));
+            if ($plan['suspicious_entries'] !== []) {
+                $this->table(['Empleado', 'Fecha', 'Entry ID', 'Logged raw', 'Inicio', 'Fin', 'Proyecto', 'Motivo'],
+                    array_map(fn ($row): array => [
+                        $row['employee'], $row['date_logged'], $row['entry_id'],
+                        is_scalar($row['raw_logged_time']) ? (string) $row['raw_logged_time'] : 'N/D',
+                        $row['start_time'] ?? 'N/D', $row['end_time'] ?? 'N/D', $row['project'] ?? 'N/D', $row['reason'],
+                    ], $plan['suspicious_entries']));
+            }
+            $this->line('Proyectos sin mapeo: '.count($plan['unmapped_projects']).'; empleados sin mapeo: '.count($plan['unmapped_employees']));
+            $this->line('Activity/Insights: no expuesto por la API pública; no se infiere desde logged time.');
+            if (! $this->option('dry-run')) {
+                $this->line("Entradas escritas: {$plan['written']}; empleados recalculados: {$plan['affected_employees']}.");
+            }
+
+            return self::SUCCESS;
+        }
+
+        if (config('trackabi.provider') !== 'mindcloud' || ! config('trackabi.mindcloud_enabled')) {
+            $this->error('MindCloud está deshabilitado para importaciones de planilla.');
+
+            return self::FAILURE;
+        }
+
         $campaign = (string) $this->option('campaign');
         $fromOption = $this->option('from') ?: config('trackabi.import_from_date');
         $toOption = $this->option('to') ?: config('trackabi.import_to_date');
@@ -266,6 +328,13 @@ Artisan::command(
 
         if ($period->status === 'cerrado') {
             $this->error('El período está cerrado y no será modificado.');
+
+            return self::FAILURE;
+        }
+
+        $cutover = config('trackabi_direct.cutover_date');
+        if ($cutover && $period->ends_at->toDateString() >= $cutover) {
+            $this->error('MindCloud no puede importar un período que cruza o sigue el cutover de Trackabi Direct.');
 
             return self::FAILURE;
         }

@@ -1252,7 +1252,7 @@ class PayrollCalculationServiceTest extends TestCase
         $this->assertSame(3600, $may26->assigned_overtime_seconds);
         $this->assertSame(7140, $may26->difference_seconds);
         $this->assertSame(32400, $may26->payable_seconds);
-        $this->assertSame(14400, DailyTimeReview::query()
+        $this->assertSame(14400, (int) DailyTimeReview::query()
             ->where('payroll_period_id', $period->id)
             ->where('employee_id', $employee->id)
             ->sum('assigned_overtime_seconds'));
@@ -1365,11 +1365,11 @@ class PayrollCalculationServiceTest extends TestCase
         $service->recalculatePayrollResults($firstPeriod);
         $service->recalculatePayrollResults($secondPeriod);
 
-        $this->assertSame(14400, DailyTimeReview::query()
+        $this->assertSame(14400, (int) DailyTimeReview::query()
             ->where('employee_id', $employee->id)
             ->whereBetween('date', ['2026-05-11', '2026-05-17'])
             ->sum('assigned_overtime_seconds'));
-        $this->assertSame(3600, DailyTimeReview::query()
+        $this->assertSame(3600, (int) DailyTimeReview::query()
             ->where('payroll_period_id', $secondPeriod->id)
             ->sum('assigned_overtime_seconds'));
     }
@@ -3203,11 +3203,11 @@ class PayrollCalculationServiceTest extends TestCase
         ]);
 
         $this->assertSame(0, $exitCode, Artisan::output());
-        $this->assertSame(309600, DailyTimeReview::query()
+        $this->assertSame(309600, (int) DailyTimeReview::query()
             ->where('payroll_period_id', $period->id)
             ->where('employee_id', 63)
             ->sum('payable_seconds'));
-        $this->assertSame(10800, DailyTimeReview::query()
+        $this->assertSame(10800, (int) DailyTimeReview::query()
             ->where('payroll_period_id', $period->id)
             ->where('employee_id', 63)
             ->sum('possible_overtime_seconds'));
@@ -3365,13 +3365,13 @@ class PayrollCalculationServiceTest extends TestCase
         ]);
 
         $this->assertSame(0, $exitCode, Artisan::output());
-        $this->assertSame(18000, DailyTimeReview::query()
+        $this->assertSame(18000, (int) DailyTimeReview::query()
             ->where('payroll_period_id', $period->id)
             ->where('employee_id', $priscila->id)
             ->whereDate('date', '>=', '2026-07-20')
             ->whereDate('date', '<=', '2026-07-25')
             ->sum('preassigned_overtime_seconds'));
-        $this->assertSame(18000, DailyTimeReview::query()
+        $this->assertSame(18000, (int) DailyTimeReview::query()
             ->where('payroll_period_id', $period->id)
             ->where('employee_id', $dereck->id)
             ->whereDate('date', '>=', '2026-07-20')
@@ -3518,7 +3518,7 @@ class PayrollCalculationServiceTest extends TestCase
             '--apply' => true,
         ]);
 
-        $this->assertSame(18000, DailyTimeReview::query()
+        $this->assertSame(18000, (int) DailyTimeReview::query()
             ->where('payroll_period_id', $period->id)
             ->where('employee_id', $priscila->id)
             ->whereDate('date', '>=', '2026-07-20')

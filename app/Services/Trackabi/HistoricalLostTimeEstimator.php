@@ -6,6 +6,7 @@ use App\Models\DailyTimeReview;
 use App\Models\Employee;
 use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
+use App\Models\TrackabiDailyActivity;
 use App\Services\PayrollCalculationService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -16,6 +17,9 @@ class HistoricalLostTimeEstimator
 
     public function plan(PayrollPeriod $period, ?int $employeeId = null, bool $refreshPending = false): Collection
     {
+        if ($period->starts_at->toDateString() >= (string) (config('trackabi_direct.cutover_date') ?: '2026-09-26')) {
+            return collect();
+        }
         $historyIds = PayrollPeriod::query()
             ->whereIn('id', config('trackabi.historical_loss_period_ids', []))
             ->whereDate('ends_at', '<', $period->starts_at)
@@ -71,6 +75,12 @@ class HistoricalLostTimeEstimator
             ->get()
             ->groupBy(fn (HubstaffTimeEntry $entry): string => $this->key($entry->payroll_period_id, $entry->employee_id, $entry->date->toDateString()));
 
+        $activityDays = TrackabiDailyActivity::query()->where('payroll_period_id', $period->id)
+            ->when($employeeId, fn ($query) => $query->where('employee_id', $employeeId))
+            ->get()->mapWithKeys(fn (TrackabiDailyActivity $activity): array => [
+                $this->key($period->id, $activity->employee_id, $activity->activity_date->toDateString()) => true,
+            ]);
+
         $candidates = DailyTimeReview::query()
             ->where('payroll_period_id', $period->id)
             ->when($employeeId, fn ($query) => $query->where('employee_id', $employeeId))
@@ -78,12 +88,13 @@ class HistoricalLostTimeEstimator
             ->where('hubstaff_total_seconds', '>', 0)
             ->with('employee')
             ->get()
-            ->filter(function (DailyTimeReview $review) use ($trackabiDays): bool {
+            ->filter(function (DailyTimeReview $review) use ($trackabiDays, $activityDays): bool {
                 $expected = max((int) $review->expected_hubstaff_seconds, 0);
 
                 return $review->employee?->paid_without_tracking !== true
                     && $expected > 0
                     && (int) $review->hubstaff_total_seconds >= $expected
+                    && ! $activityDays->has($this->key($review->payroll_period_id, $review->employee_id, $review->date->toDateString()))
                     && $trackabiDays->has($this->key($review->payroll_period_id, $review->employee_id, $review->date->toDateString()));
             })
             ->groupBy('employee_id');
@@ -137,6 +148,10 @@ class HistoricalLostTimeEstimator
 
     public function apply(PayrollPeriod $period, Collection $plan, bool $refreshPending = false): int
     {
+        if ($period->starts_at->toDateString() >= (string) (config('trackabi_direct.cutover_date') ?: '2026-09-26')) {
+            throw new \RuntimeException('La estimación histórica no se permite después del cutover de Trackabi.');
+        }
+
         return DB::transaction(function () use ($period, $plan, $refreshPending): int {
             if ($period->fresh()->status === 'cerrado') {
                 throw new \RuntimeException('No se puede estimar tiempo en un período cerrado.');
@@ -147,6 +162,8 @@ class HistoricalLostTimeEstimator
             foreach ($plan as $row) {
                 $review = DailyTimeReview::query()->lockForUpdate()->findOrFail($row['review_id']);
                 if ($review->payroll_period_id !== $period->id || $review->status !== 'pendiente' || $review->paid_day_off
+                    || TrackabiDailyActivity::query()->where('payroll_period_id', $period->id)
+                        ->where('employee_id', $review->employee_id)->whereDate('activity_date', $review->date)->exists()
                     || ($review->lost_time_source !== null && ! ($refreshPending
                         && $review->lost_time_source === 'historical_estimate'
                         && (int) $review->supervisor_adjustment_seconds === 0))

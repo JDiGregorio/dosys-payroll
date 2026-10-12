@@ -49,10 +49,38 @@ class TrackabiDirectDiscovery
             $this->probe($path, $query, $rows, $raw);
         }
 
+        $accessible = collect($rows)->filter(fn (array $row): bool => $row['status'] === 'Accesible (2xx)')
+            ->pluck('path')->all();
+        $capabilities = [];
+        foreach ([
+            ['Time entries', '/api/v1/time-entries', 'logged_time, date_logged', 'start_date, end_date, project_id, email; page, page_size'],
+            ['Members', '/api/v1/members', 'id, email, first_name, last_name', 'page, page_size'],
+            ['Projects', '/api/v1/projects', 'id, name', 'page, page_size'],
+        ] as [$metric, $path, $fields, $filters]) {
+            $capabilities[] = [
+                'metric' => $metric,
+                'status' => in_array($path, $accessible, true) ? 'YES' : 'NOT CONFIRMED',
+                'endpoint' => $path,
+                'fields' => $fields,
+                'filters' => $filters,
+            ];
+        }
+        foreach (['User/Desktop Activity', 'Productive Activity', 'Unproductive Activity', 'Activity Score',
+            'Application Usage', 'Application Timeline', 'Browser URL Logs', 'Screenshots'] as $metric) {
+            $capabilities[] = [
+                'metric' => $metric,
+                'status' => $activityPaths === [] ? 'NOT EXPOSED' : 'UNCONFIRMED',
+                'endpoint' => $activityPaths === [] ? '-' : implode(', ', $activityPaths),
+                'fields' => '-',
+                'filters' => '-',
+            ];
+        }
+
         return [
             'version' => $this->client->sanitize($spec['info']['version'] ?? 'desconocida'),
             'rows' => $rows,
             'activity_paths' => $this->client->sanitize($activityPaths),
+            'capabilities' => $capabilities,
             'stored_path' => $this->client->storeDiagnostic(['responses' => $raw, 'openapi' => $spec]),
         ];
     }

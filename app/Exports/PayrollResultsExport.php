@@ -72,7 +72,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
             'Pago por día',
             'Hora',
             'Hora extra',
-            'Días trabajados',
+            'Días pagables (equiv.)',
             'Salario',
             'Bonos extras',
             'Horas extras',

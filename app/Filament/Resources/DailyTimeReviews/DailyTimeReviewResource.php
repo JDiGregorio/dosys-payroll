@@ -6,9 +6,13 @@ use App\Filament\Resources\DailyTimeReviews\Pages\CreateDailyTimeReview;
 use App\Filament\Resources\DailyTimeReviews\Pages\EditDailyTimeReview;
 use App\Filament\Resources\DailyTimeReviews\Pages\ListDailyTimeReviews;
 use App\Models\DailyTimeReview;
+use App\Models\TrackingImportAlert;
 use App\Models\User;
 use App\Services\PayrollCalculationService;
 use App\Services\TimeParserService;
+use App\Services\Trackabi\TrackabiActivityCoverageService;
+use App\Services\Trackabi\TrackabiPaidActivityService;
+use App\Services\Trackabi\TrackabiInsightsCsvImportService;
 use App\Support\TimeTrackingSource;
 use BackedEnum;
 use Filament\Actions\Action;
@@ -18,6 +22,7 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
+use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Tabs;
 use Filament\Schemas\Components\Tabs\Tab;
@@ -92,6 +97,52 @@ class DailyTimeReviewResource extends Resource
             Tabs::make('Revisión diaria')
                 ->columnSpanFull()
                 ->tabs([
+                    Tab::make('Revisión Trackabi')->label('Revisión y justificación')
+                        ->visible(fn (?DailyTimeReview $record): bool => self::isDirectReview($record))
+                        ->columns(2)
+                        ->schema([
+                            Select::make('employee_id')->label('Empleado')->relationship('employee', 'name')->disabled(),
+                            DatePicker::make('date')->label('Fecha')->disabled(),
+                            TextInput::make('direct_ordinary_hours')->label('Horas ordinarias esperadas')->disabled()->dehydrated(false)
+                                ->visible(fn (?DailyTimeReview $record): bool => self::hasHubstaffTime($record))
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) $record?->expected_ordinary_seconds))),
+                            TextInput::make('direct_overtime_hours')->label('Horas extras preasignadas')->disabled()->dehydrated(false)
+                                ->visible(fn (?DailyTimeReview $record): bool => self::hasHubstaffTime($record))
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) $record?->preassigned_overtime_seconds))),
+                            TextInput::make('direct_required_hours')->label('Total horas esperadas diarias')->disabled()->dehydrated(false)
+                                ->visible(fn (?DailyTimeReview $record): bool => self::hasHubstaffTime($record))
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) $record?->expected_paid_seconds))),
+                            TextInput::make('direct_trackabi_hours')->label('Total Hora Trackabi')->disabled()->dehydrated(false)
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds($record ? (app(TrackabiPaidActivityService::class)->creditedMeasuredSeconds($record) ?? 0) : 0))),
+                            TextInput::make('direct_pending_hours')->label('Tiempo pendiente de revisión')->disabled()->dehydrated(false)
+                                ->visible(fn (?DailyTimeReview $record): bool => self::hasHubstaffTime($record))
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds($record?->finalEstimatedLostSeconds() ?? 0))),
+                            TextInput::make('direct_justified_hours')->label('Tiempo justificado (HH:MM)')->placeholder('0:00')
+                                ->rules(['regex:/^\d{1,3}:[0-5]\d$/'])
+                                ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
+                                ->visible(fn (?DailyTimeReview $record): bool => self::hasHubstaffTime($record))
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) $record?->justified_absence_seconds))),
+                            Toggle::make('paid_day_off')->label('Día OFF')->live()
+                                ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
+                                ->visible(fn (?DailyTimeReview $record): bool => ! self::hasHubstaffTime($record)),
+                            Toggle::make('absence_justified')->label('Día justificado')->live()
+                                ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
+                                ->visible(fn (?DailyTimeReview $record): bool => ! self::hasHubstaffTime($record))
+                                ->afterStateHydrated(fn (Toggle $component, ?DailyTimeReview $record) => $component->state($record ? self::isFullyJustifiedAbsence($record) : false)),
+                            Toggle::make('off_worked')->label('Día OFF trabajado')->live()
+                                ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
+                                ->visible(fn (?DailyTimeReview $record): bool => ! self::hasHubstaffTime($record)),
+                            TextInput::make('off_worked_verified_hours')->label('Horas trabajadas confirmadas (HH:MM)')
+                                ->helperText('Se requiere confirmación de horas para pagar el día OFF trabajado.')
+                                ->rules(['regex:/^\d{1,3}:[0-5]\d$/'])
+                                ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
+                                ->visible(fn (?DailyTimeReview $record): bool => ! self::hasHubstaffTime($record))
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) $record?->off_worked_verified_seconds))),
+                            Textarea::make('supervisor_comment')->label('Comentario supervisor')
+                                ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->columnSpanFull(),
+                            Textarea::make('rrhh_comment')->label('Comentario RRHH')
+                                ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->visible(fn () => auth()->user()?->isRrhh())->columnSpanFull(),
+                        ]),
                     Tab::make('Revisión y justificación')
                         ->columns(2)
                         ->schema([
@@ -111,17 +162,24 @@ class DailyTimeReviewResource extends Resource
                             TextInput::make('assigned_overtime_hours')->label('Horas extra preasignadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond((int) $record->preassigned_overtime_seconds) : '0:00:00')),
                             TextInput::make('additional_overtime_hours')->label('Horas extra adicionales')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond((int) $record->additional_overtime_seconds) : '0:00:00')),
                             TextInput::make('required_hours')->label('Total requerido')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond(self::requiredSeconds($record)) : '0:00:00')),
-                            TextInput::make('hubstaff_total_hours')->label(fn (?DailyTimeReview $record): string => 'Total horas '.self::timeTrackingLabel($record))->helperText(fn (?DailyTimeReview $record): ?string => $record?->hasTrackabiTimer() ? 'Timer original (loggedTime). Actividad de escritorio, productivo y no productivo: no disponibles en esta importacion.' : null)->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_total_seconds) : '0:00:00')),
+                            TextInput::make('hubstaff_total_hours')->label(fn (?DailyTimeReview $record): string => 'Total horas '.self::timeTrackingLabel($record))->helperText(fn (?DailyTimeReview $record): ?string => $record?->hasTrackabiTimer() ? 'Timer original (loggedTime); no equivale a actividad medida.' : null)->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (int) ($record?->hubstaff_total_seconds ?? 0) > 0)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_total_seconds) : '0:00:00')),
+                            TextInput::make('trackabi_productive_hours')->label('Actividad productiva Trackabi')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->trackabiActivity)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->trackabiActivity ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->trackabiActivity->productive_activity_seconds) : '')),
+                            TextInput::make('trackabi_unproductive_hours')->label('Actividad improductiva Trackabi')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->trackabiActivity)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->trackabiActivity ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->trackabiActivity->unproductive_activity_seconds) : '')),
+                            TextInput::make('trackabi_measured_hours')->label('Desktop Activity (Productiva + Improductiva)')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->trackabiActivity)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->trackabiActivity ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->trackabiActivity->measured_activity_seconds) : '')),
+                            TextInput::make('trackabi_activity_status')->label('Estado de actividad')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->trackabiActivity || in_array($record?->lost_time_source, ['missing_activity', 'missing_timer'], true))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->lost_time_source === 'missing_timer' ? 'SIN TIMER - REVISIÓN PENDIENTE' : (! $record?->trackabiActivity ? 'MISSING - REVIEW REQUIRED' : ((int) $record->trackabiActivity->measured_activity_seconds === 0 ? 'ZERO ACTIVITY' : 'AVAILABLE')))),
+                            TextInput::make('trackabi_activity_source')->label('Fuente de actividad')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->trackabiActivity)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->trackabiActivity?->source === 'trackabi_insights_csv' ? 'Trackabi Insights CSV' : ($record?->trackabiActivity?->source ?? ''))),
+                            TextInput::make('trackabi_activity_target_hours')->label('Objetivo trackeable del día')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->trackabiActivity)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->expected_hubstaff_seconds) : '')),
+                            TextInput::make('trackabi_shortfall_hours')->label('Tiempo pendiente de revisión')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->trackabiActivity)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->trackabiActivity ? app(TimeParserService::class)->secondsToHourMinuteSecond(max((int) $record->expected_hubstaff_seconds - (int) $record->trackabiActivity->measured_activity_seconds, 0)) : '')),
                             TextInput::make('verified_tracked_hours')->label('Horas verificadas en Trackabi')->helperText('Valor usado para esta planilla; el timer importado permanece intacto.')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => $record?->verified_tracked_seconds !== null)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->verified_tracked_seconds !== null ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->verified_tracked_seconds) : '0:00:00')),
                             TextInput::make('computable_tracked_hours')->label('Horas computables del timer')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => $record?->hasTrackabiTimer())->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->computableTrackedSeconds()) : '0:00:00')),
-                            TextInput::make('estimated_lost_hours')->label('Pérdida histórica estimada')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->estimated_lost_seconds) : '0:00')),
+                            TextInput::make('estimated_lost_hours')->label(fn (?DailyTimeReview $record) => $record?->lost_time_source === 'missing_timer' ? 'Ausencia pendiente sin timer' : ($record?->usesMeasuredActivity() ? 'Faltante provisional de actividad' : ($record?->lost_time_source === 'missing_activity' ? 'Faltante no determinado' : 'Pérdida histórica estimada')))->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute((int) $record->estimated_lost_seconds) : '0:00')),
                             TextInput::make('supervisor_lost_hours')->label('Pérdida propuesta por supervisor')->helperText('Ajusta la estimación. La justificación se descuenta de este valor.')
                                 ->rules(['regex:/^\d{1,2}:[0-5]\d$/'])
                                 ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
                                 ->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)
                                 ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->provisionalLostSeconds()) : '0:00')),
-                            TextInput::make('final_estimated_lost_hours')->label('Pérdida estimada sin justificar')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->finalEstimatedLostSeconds()) : '0:00')),
-                            TextInput::make('lost_time_source_display')->label('Origen del faltante')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->lost_time_source === 'supervisor_adjustment' ? 'Ajuste del supervisor' : 'Estimación histórica')),
+                            TextInput::make('final_estimated_lost_hours')->label('Tiempo perdido no justificado')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinute($record->finalEstimatedLostSeconds()) : '0:00')),
+                            TextInput::make('lost_time_source_display')->label('Origen del faltante')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->lost_time_source === 'missing_timer' ? 'Sin registro Trackabi Direct' : ($record?->usesMeasuredActivity() ? 'Trackabi Insights CSV' : ($record?->lost_time_source === 'missing_activity' ? 'Actividad Insights faltante' : ($record?->lost_time_source === 'supervisor_adjustment' ? 'Ajuste del supervisor' : 'Estimación histórica'))))),
                             TextInput::make('reviewed_by_display')->label('Revisado por')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->reviewed_by ? User::query()->find($record->reviewed_by)?->name : 'Pendiente')),
                             TextInput::make('reviewed_at_display')->label('Fecha de revisión')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => (bool) $record?->lost_time_source)->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->reviewed_at?->format('d/m/Y H:i') ?? 'Pendiente')),
                             TextInput::make('hubstaff_idle_hours')->label(fn (?DailyTimeReview $record): string => 'Idle reportado por '.self::timeTrackingLabel($record))->helperText(fn (?DailyTimeReview $record): string => 'Es un dato independiente enviado por '.self::timeTrackingLabel($record).'; no representa necesariamente la diferencia contra las horas requeridas.')->disabled()->dehydrated(false)->visible(fn (?DailyTimeReview $record) => self::hasHubstaffTime($record))->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record ? app(TimeParserService::class)->secondsToHourMinuteSecond($record->hubstaff_idle_seconds) : '0:00:00')),
@@ -148,12 +206,36 @@ class DailyTimeReviewResource extends Resource
                             Toggle::make('absence_justified')->label('Ausencia justificada')->helperText('Marca si no hubo registro, pero el día debe pagarse por permiso o constancia.')->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->visible(fn (?DailyTimeReview $record) => ! self::hasHubstaffTime($record))->afterStateHydrated(fn (Toggle $component, ?DailyTimeReview $record) => $component->state($record ? self::isFullyJustifiedAbsence($record) : false)),
                             Textarea::make('supervisor_comment')->label('Comentario supervisor')->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->columnSpanFull(),
                             Textarea::make('rrhh_comment')->label('Comentario RRHH')->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->visible(fn () => auth()->user()?->isRrhh())->columnSpanFull(),
-                        ]),
+                        ])->visible(fn (?DailyTimeReview $record): bool => ! self::isDirectReview($record)),
                     Tab::make(fn (?DailyTimeReview $record): string => 'Registros de '.self::timeTrackingLabel($record))
                         ->columns(1)
                         ->schema([
                             View::make('filament.resources.daily-time-reviews.hubstaff-entries')
                                 ->columnSpanFull(),
+                        ]),
+                    Tab::make('Detalle de cálculo')
+                        ->visible(fn (?DailyTimeReview $record): bool => self::isDirectReview($record))
+                        ->columns(2)
+                        ->schema([
+                            TextInput::make('detail_timer_hours')->label('Timer original Trackabi')->disabled()->dehydrated(false)
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) $record?->hubstaff_total_seconds))),
+                            TextInput::make('detail_productive_hours')->label('Actividad productiva')->disabled()->dehydrated(false)
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) ($record?->trackabiActivity?->productive_activity_seconds ?? 0)))),
+                            TextInput::make('detail_unproductive_hours')->label('Actividad improductiva')->disabled()->dehydrated(false)
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) ($record?->trackabiActivity?->unproductive_activity_seconds ?? 0)))),
+                            TextInput::make('detail_measured_hours')->label('Actividad medida sin pausas')->disabled()->dehydrated(false)
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) ($record?->trackabiActivity?->measured_activity_seconds ?? 0)))),
+                            TextInput::make('detail_paid_nontracked_hours')->label('Almuerzo y descanso pagados')->disabled()->dehydrated(false)
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) $record?->paid_time_not_tracked_seconds))),
+                            TextInput::make('detail_trackable_target_hours')->label('Objetivo trackeable')->disabled()->dehydrated(false)
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) $record?->expected_hubstaff_seconds))),
+                            TextInput::make('detail_source')->label('Origen del faltante')->disabled()->dehydrated(false)
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state($record?->lost_time_source ?? 'Sin fuente')),
+                            TextInput::make('direct_supervisor_lost_hours')->label('Tiempo pendiente propuesto (HH:MM)')
+                                ->rules(['regex:/^\d{1,3}:[0-5]\d$/'])
+                                ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
+                                ->visible(fn (?DailyTimeReview $record): bool => self::hasHubstaffTime($record))
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds($record?->provisionalLostSeconds() ?? 0))),
                         ]),
                 ]),
         ]);
@@ -193,6 +275,7 @@ class DailyTimeReviewResource extends Resource
                     ->mutateRecordDataUsing(fn (array $data, DailyTimeReview $record): array => $data + self::hourStates($record))
                     ->mutateFormDataUsing(fn (array $data, DailyTimeReview $record): array => self::secondsFromHourStates($data, $record))
                     ->after(fn (DailyTimeReview $record, PayrollCalculationService $service) => self::recalculateReviewAndPayroll($record, $service)),
+                self::reviewTrackabiActivityAction(),
                 Action::make('reviewed')
                     ->label('Marcar aplicado')
                     ->icon('heroicon-o-check')
@@ -222,6 +305,43 @@ class DailyTimeReviewResource extends Resource
             ]);
     }
 
+    public static function reviewTrackabiActivityAction(): Action
+    {
+        return Action::make('reviewTrackabiActivity')
+            ->label('Revisar actividad nueva')
+            ->icon('heroicon-o-arrow-path')
+            ->form([
+                TextInput::make('proposed_lost_hours')->label('Tiempo pendiente propuesto (HH:MM)')
+                    ->default(fn (DailyTimeReview $record) => app(TimeParserService::class)->secondsToHourMinute(
+                        max((int) $record->expected_hubstaff_seconds - (int) $record->trackabiActivity?->measured_activity_seconds, 0),
+                    ))
+                    ->rules(['regex:/^\d{1,3}:[0-5]\d$/'])->required(),
+                TextInput::make('justified_hours')->label('Tiempo justificado (HH:MM)')
+                    ->default(fn (DailyTimeReview $record) => app(TimeParserService::class)->secondsToHourMinute(
+                        (int) $record->justified_absence_seconds,
+                    ))
+                    ->rules(['regex:/^\d{1,3}:[0-5]\d$/'])->required(),
+                Textarea::make('supervisor_comment')->label('Comentario supervisor')
+                    ->default(fn (DailyTimeReview $record) => $record->supervisor_comment),
+            ])
+            ->requiresConfirmation()
+            ->action(function (DailyTimeReview $record, array $data): void {
+                $parser = app(TimeParserService::class);
+                app(TrackabiInsightsCsvImportService::class)->reviewNewActivity(
+                    $record,
+                    $parser->parseToSeconds($data['proposed_lost_hours']),
+                    $parser->parseToSeconds($data['justified_hours']),
+                    $data['supervisor_comment'] ?? null,
+                );
+                Notification::make()->title('Actividad revisada')->success()->send();
+            })
+            ->visible(fn (DailyTimeReview $record) => ! self::isClosedPeriod($record)
+                && TrackingImportAlert::query()->where('payroll_period_id', $record->payroll_period_id)
+                    ->where('code', 'TRACKABI_ACTIVITY_DATA_AFTER_REVIEW')
+                    ->where('external_id', 'activity:'.$record->employee_id.':'.$record->date->toDateString())
+                    ->where('resolved', false)->exists());
+    }
+
     private static function hoursColumn(string $name, string $label): TextColumn
     {
         return TextColumn::make($name)
@@ -247,6 +367,9 @@ class DailyTimeReviewResource extends Resource
             'justified_lost_time_hours' => $parser->secondsToHourMinute($record->justified_absence_seconds),
             'supervisor_lost_hours' => $parser->secondsToHourMinute($record->provisionalLostSeconds()),
             'absence_justified' => self::isFullyJustifiedAbsence($record),
+            'direct_justified_hours' => $parser->secondsToHourMinute($record->justified_absence_seconds),
+            'direct_supervisor_lost_hours' => $parser->secondsToHourMinute($record->provisionalLostSeconds()),
+            'off_worked_verified_hours' => $parser->secondsToHourMinute((int) $record->off_worked_verified_seconds),
         ];
     }
 
@@ -259,6 +382,14 @@ class DailyTimeReviewResource extends Resource
         }
 
         $parser = app(TimeParserService::class);
+        if (self::isDirectReview($record)) {
+            if (array_key_exists('direct_justified_hours', $data)) {
+                $data['justified_lost_time_hours'] = $data['direct_justified_hours'];
+            }
+            if (array_key_exists('direct_supervisor_lost_hours', $data)) {
+                $data['supervisor_lost_hours'] = $data['direct_supervisor_lost_hours'];
+            }
+        }
 
         if (self::hasHubstaffTime($record)) {
             if ($record->lost_time_source && array_key_exists('supervisor_lost_hours', $data)) {
@@ -268,7 +399,7 @@ class DailyTimeReviewResource extends Resource
                 }
                 $data['supervisor_adjustment_seconds'] = $proposed - (int) $record->estimated_lost_seconds;
                 $data['lost_time_source'] = $data['supervisor_adjustment_seconds'] === 0
-                    ? 'historical_estimate'
+                    ? $record->lost_time_source
                     : 'supervisor_adjustment';
             }
             $lostTimeSeconds = self::lostTimeSeconds($record, $data['supervisor_adjustment_seconds'] ?? null);
@@ -278,28 +409,57 @@ class DailyTimeReviewResource extends Resource
                 : min($requestedJustifiedSeconds, $lostTimeSeconds);
 
             $data['paid_day_off'] = false;
+            $data['off_worked'] = false;
+            $data['off_worked_verified_seconds'] = null;
             $data['justified_absence_seconds'] = $justifiedSeconds;
             $data['unjustified_absence_seconds'] = max($lostTimeSeconds - $justifiedSeconds, 0);
         } else {
             $isOff = (bool) ($data['paid_day_off'] ?? false);
             $isJustifiedAbsence = (bool) ($data['absence_justified'] ?? false);
+            $isOffWorked = self::isDirectReview($record) && (bool) ($data['off_worked'] ?? false);
+            $verified = $parser->parseToSeconds($data['off_worked_verified_hours'] ?? 0);
+            if ($isOffWorked) {
+                if ($isJustifiedAbsence || $verified <= 0 || $verified > $record->offWorkedRequiredSeconds()) {
+                    throw ValidationException::withMessages([
+                        'off_worked_verified_hours' => 'Confirma horas trabajadas mayores que cero y hasta la jornada diaria; el día no puede ser también una ausencia justificada.',
+                    ]);
+                }
+                $isOff = true;
+                $data['paid_day_off'] = true;
+            }
+            $data['off_worked'] = $isOffWorked;
+            $data['off_worked_verified_seconds'] = $isOffWorked ? $verified : null;
 
-            $data['justified_absence_seconds'] = $isOff ? 0 : ($isJustifiedAbsence ? $record->expected_ordinary_seconds : 0);
-            $data['unjustified_absence_seconds'] = $isOff || $isJustifiedAbsence ? 0 : $record->expected_ordinary_seconds;
+            $reviewSeconds = $record->untrackedDayReviewSeconds();
+            $data['justified_absence_seconds'] = $isOff ? 0 : ($isJustifiedAbsence ? $reviewSeconds : 0);
+            $data['unjustified_absence_seconds'] = $isOff || $isJustifiedAbsence ? 0 : $reviewSeconds;
         }
 
         $data['status'] = 'revisado_supervisor';
         $data['reviewed_by'] = auth()->id();
         $data['reviewed_at'] = now();
 
-        unset($data['justified_lost_time_hours'], $data['supervisor_lost_hours'], $data['absence_justified']);
+        unset($data['justified_lost_time_hours'], $data['supervisor_lost_hours'], $data['absence_justified'],
+            $data['direct_justified_hours'], $data['direct_supervisor_lost_hours'], $data['off_worked_verified_hours']);
 
         return $data;
     }
 
     private static function hasHubstaffTime(?DailyTimeReview $record): bool
     {
-        return (int) ($record?->hubstaff_total_seconds ?? 0) > 0;
+        return (int) ($record?->hubstaff_total_seconds ?? 0) > 0
+            || (int) ($record?->trackabiActivity?->measured_activity_seconds ?? 0) > 0;
+    }
+
+    private static function isDirectReview(?DailyTimeReview $record): bool
+    {
+        return $record?->payrollPeriod !== null
+            && app(TrackabiActivityCoverageService::class)->applies($record->payrollPeriod);
+    }
+
+    private static function formatSeconds(int $seconds): string
+    {
+        return app(TimeParserService::class)->secondsToHourMinute(max($seconds, 0));
     }
 
     private static function lostTimeSeconds(DailyTimeReview $record, ?int $supervisorAdjustmentSeconds = null): int
@@ -333,8 +493,8 @@ class DailyTimeReviewResource extends Resource
     {
         return ! self::hasHubstaffTime($record)
             && ! $record->paid_day_off
-            && (int) $record->expected_ordinary_seconds > 0
-            && (int) $record->justified_absence_seconds >= (int) $record->expected_ordinary_seconds;
+            && $record->untrackedDayReviewSeconds() > 0
+            && (int) $record->justified_absence_seconds >= $record->untrackedDayReviewSeconds();
     }
 
     public static function statusOptions(): array

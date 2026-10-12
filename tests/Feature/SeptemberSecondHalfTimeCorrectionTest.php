@@ -23,10 +23,10 @@ class SeptemberSecondHalfTimeCorrectionTest extends TestCase
     public function test_verified_times_and_weekend_overtime_survive_recalculation_without_changing_reviews_or_raw_entries(): void
     {
         foreach (range(1, 7) as $number) {
-            PayrollPeriod::create(['name' => "Previous {$number}", 'starts_at' => '2026-01-01', 'ends_at' => '2026-01-01']);
+            PayrollPeriod::create(['id' => $number, 'name' => "Previous {$number}", 'starts_at' => '2026-01-01', 'ends_at' => '2026-01-01']);
         }
-        $previous = PayrollPeriod::create(['name' => 'Previous half', 'starts_at' => '2026-08-26', 'ends_at' => '2026-09-10']);
-        $period = PayrollPeriod::create(['name' => 'September half', 'starts_at' => '2026-09-11', 'ends_at' => '2026-09-25', 'status' => 'en_revision', 'limit_payable_to_schedule' => true]);
+        $previous = PayrollPeriod::create(['id' => 8, 'name' => 'Previous half', 'starts_at' => '2026-08-26', 'ends_at' => '2026-09-10']);
+        $period = PayrollPeriod::create(['id' => 9, 'name' => 'September half', 'starts_at' => '2026-09-11', 'ends_at' => '2026-09-25', 'status' => 'en_revision', 'limit_payable_to_schedule' => true]);
         $schedule = ScheduleType::create(['name' => 'Diurna', 'code' => 'diurna', 'active' => true]);
         $template = WorkScheduleTemplate::create(['name' => 'Monday to Friday', 'schedule_type' => 'diurna', 'active' => true]);
         foreach (range(1, 5) as $day) {

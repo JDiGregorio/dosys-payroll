@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\Trackabi\TrackabiActivityCoverageService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -25,6 +26,7 @@ class PayrollResult extends Model
             'overtime_lost_amount' => 'decimal:2',
             'lost_time_amount' => 'decimal:2',
             'extra_bonuses_amount' => 'decimal:2',
+            'off_worked_extra_amount' => 'decimal:2',
             'referred_bonus_amount' => 'decimal:2',
             'adjustment_bonus_amount' => 'decimal:2',
             'tier_adjustment_bonus_amount' => 'decimal:2',
@@ -68,6 +70,15 @@ class PayrollResult extends Model
 
     public function displayWorkedDays(): float
     {
+        $period = $this->relationLoaded('payrollPeriod')
+            ? $this->payrollPeriod
+            : $this->payrollPeriod()->first();
+        if ($period && app(TrackabiActivityCoverageService::class)->applies($period)) {
+            return $this->employeeForDisplay()?->paid_without_tracking
+                ? $this->displayBasePeriodDays()
+                : round((float) $this->worked_days, 2);
+        }
+
         if ($this->shouldDisplayFixedBiweeklyDays()) {
             return round(max($this->displayBasePeriodDays() - $this->displayLostDays(), 0), 2);
         }

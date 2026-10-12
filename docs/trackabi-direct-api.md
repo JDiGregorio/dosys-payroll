@@ -1,5 +1,8 @@
 # Trackabi: API directa en paralelo con MindCloud
 
+> Documento histórico de la fase de diagnóstico. Para el flujo operativo
+> posterior al cutover, consultar [trackabi-direct-cutover.md](trackabi-direct-cutover.md).
+
 ## Estado verificado
 
 Verificado el 28 de septiembre de 2026 con la clave directa configurada localmente.

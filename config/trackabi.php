@@ -2,7 +2,9 @@
 
 return [
     'enabled' => env('TRACKABI_ENABLED', false),
-    'provider' => env('TRACKABI_PROVIDER', 'mindcloud'),
+    'provider' => env('TRACKABI_PROVIDER', 'direct'),
+    'mindcloud_enabled' => env('TRACKABI_MINDCLOUD_ENABLED', false),
+    'hubstaff_import_enabled' => env('TRACKABI_HUBSTAFF_IMPORT_ENABLED', false),
 
     'api_base_url' => rtrim(env('TRACKABI_API_BASE_URL', 'https://connect.mindcloud.co/v1/universal/trackabi/latest'), '/'),
     'api_token' => env('MINDCLOUD_API_KEY', env('TRACKABI_API_TOKEN')),

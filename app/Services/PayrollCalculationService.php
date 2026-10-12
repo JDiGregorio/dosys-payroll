@@ -9,6 +9,9 @@ use App\Models\PaidTimeProject;
 use App\Models\PayrollOvertimeAdjustment;
 use App\Models\PayrollPeriod;
 use App\Models\PayrollResult;
+use App\Models\TrackabiDailyActivity;
+use App\Services\Trackabi\TrackabiActivityCoverageService;
+use App\Services\Trackabi\TrackabiPaidActivityService;
 use Carbon\Carbon;
 use Carbon\CarbonPeriod;
 use Illuminate\Support\Collection;
@@ -20,6 +23,7 @@ class PayrollCalculationService
         private readonly BonusApplicationService $bonusService,
         private readonly DeductionApplicationService $deductionService,
         private readonly ScheduleExpectationService $scheduleExpectationService,
+        private readonly TrackabiPaidActivityService $trackabiPaidActivityService,
     ) {}
 
     public function generateDailyReviews(PayrollPeriod $period): void
@@ -94,7 +98,7 @@ class PayrollCalculationService
         if ($review->paid_day_off) {
             $review->justified_absence_seconds = 0;
             $review->unjustified_absence_seconds = 0;
-            $review->payable_seconds = $this->paidDayOffSeconds($review);
+            $review->payable_seconds = $this->paidDayOffSeconds($review) + $this->offWorkedUnscheduledSeconds($review);
         } elseif ($this->isPayableUnscheduledWork($review)) {
             $review->justified_absence_seconds = 0;
             $review->unjustified_absence_seconds = 0;
@@ -142,12 +146,28 @@ class PayrollCalculationService
 
         $regularPayableSeconds = (int) $reviews->sum(fn (DailyTimeReview $review): int => $this->regularPayableSeconds($review));
         $preassignedOvertimeSeconds = (int) $reviews->sum(fn (DailyTimeReview $review): int => $this->paidAssignedOvertimeSeconds($review));
-        $payableSeconds = $regularPayableSeconds + $preassignedOvertimeSeconds;
+        $payableSeconds = $regularPayableSeconds + $preassignedOvertimeSeconds
+            + (int) $reviews->sum(fn (DailyTimeReview $review): int => $this->offWorkedUnscheduledSeconds($review));
         $hourlyRate = $this->employeeHourlyRate($employee);
         $monthlySalary = $this->employeeMonthlySalary($employee, $hourlyRate);
         $biweeklySalary = $this->employeeSemiMonthlySalary($employee, $monthlySalary);
         $dailyRate = $this->employeeDailyRate($employee, $monthlySalary);
         $fallbackOvertimeRate = $this->employeeOvertimeRate($employee, $hourlyRate);
+        $salaryCalculationMethod = $this->effectiveSalaryCalculationMethod($period, $employee);
+        $offWorkedExtraAmount = round((float) $reviews->sum(function (DailyTimeReview $review) use ($dailyRate, $salaryCalculationMethod): float {
+            $verified = $this->validOffWorkedSeconds($review);
+            if ($verified === 0) {
+                return 0;
+            }
+
+            $baseAlreadyPaysDay = in_array($salaryCalculationMethod, [
+                'semi_monthly_fixed_with_deductions', 'monthly_calendar_prorated',
+            ], true);
+            $multiplier = ! $review->scheduled_work_day && $this->isRotatingSchedule($review->employee)
+                && ! $baseAlreadyPaysDay ? 2 : 1;
+
+            return $dailyRate * $multiplier;
+        }), 2);
         $preassignedOvertimeAmount = ($preassignedOvertimeSeconds / 3600) * $fallbackOvertimeRate;
 
         [$manualOvertimeSeconds, $manualOvertimeAmount] = $this->manualOvertime($period, $employee);
@@ -163,7 +183,7 @@ class PayrollCalculationService
         $internetSubsidy = ($employee->location === 'remote' ? (float) $employee->internet_subsidy_amount : 0.0)
             + $this->bonusService->amountByType($period, $employee, ['internet_subsidy']);
         $payrollCompensation = 0.0;
-        $extrasTotal = round($overtimeAmount + $internetSubsidy + $qaBonus + $productivityBonus + $timeManagementBonus + $extraBonuses + $referredBonus + $tierAdjustmentBonus + $vacationBonus + $payrollCompensation, 2);
+        $extrasTotal = round($overtimeAmount + $internetSubsidy + $qaBonus + $productivityBonus + $timeManagementBonus + $extraBonuses + $referredBonus + $tierAdjustmentBonus + $vacationBonus + $payrollCompensation + $offWorkedExtraAmount, 2);
         $workedDays = $this->workedDays($reviews);
         $scheduledDays = (float) $reviews->where('scheduled_work_day', true)->count();
         $extraCalendarDays = $this->extraStandardBiweeklyCalendarDays($period);
@@ -171,10 +191,23 @@ class PayrollCalculationService
         $regularLostSeconds = (int) $reviews->sum(
             fn (DailyTimeReview $review): int => $this->regularUnjustifiedSeconds($review),
         );
-        $salaryCalculationMethod = $this->effectiveSalaryCalculationMethod($period, $employee);
         $idleLostSeconds = 0;
         $overtimeLostSeconds = 0;
-        $regularLostAmount = ($regularLostSeconds / 3600) * $hourlyRate;
+        $directFixedSalary = $salaryCalculationMethod === 'semi_monthly_fixed_with_deductions'
+            && app(TrackabiActivityCoverageService::class)->applies($period);
+        $regularLostAmount = (float) $reviews->sum(function (DailyTimeReview $review) use ($directFixedSalary, $dailyRate, $hourlyRate): float {
+            $lostSeconds = $this->regularUnjustifiedSeconds($review);
+            $expectedSeconds = $review->hasUntrackedDirectAbsence()
+                ? $review->untrackedDayReviewSeconds()
+                : max((int) $review->expected_ordinary_seconds, 0);
+
+            if (! $directFixedSalary || $expectedSeconds === 0) {
+                return ($lostSeconds / 3600) * $hourlyRate;
+            }
+
+            return (min($lostSeconds, $expectedSeconds) / $expectedSeconds) * $dailyRate
+                + (max($lostSeconds - $expectedSeconds, 0) / 3600) * $hourlyRate;
+        });
         $overtimeLostAmount = 0.0;
         $absenceDeduction = round($regularLostAmount, 2);
         $lostTimeSeconds = $regularLostSeconds + $idleLostSeconds + $overtimeLostSeconds;
@@ -250,11 +283,12 @@ class PayrollCalculationService
             'absence_deduction' => $absenceDeduction,
             'idle_deduction' => 0,
             'extra_bonuses_amount' => round($extraBonuses, 2),
+            'off_worked_extra_amount' => $offWorkedExtraAmount,
             'referred_bonus_amount' => round($referredBonus, 2),
             'adjustment_bonus_amount' => round($tierAdjustmentBonus, 2),
             'tier_adjustment_bonus_amount' => round($tierAdjustmentBonus, 2),
             'vacation_bonus_amount' => round($vacationBonus, 2),
-            'bonuses_amount' => round($extraBonuses + $referredBonus + $tierAdjustmentBonus + $vacationBonus + $qaBonus + $productivityBonus + $timeManagementBonus + $internetSubsidy, 2),
+            'bonuses_amount' => round($extraBonuses + $referredBonus + $tierAdjustmentBonus + $vacationBonus + $qaBonus + $productivityBonus + $timeManagementBonus + $internetSubsidy + $offWorkedExtraAmount, 2),
             'overtime_seconds' => $preassignedOvertimeSeconds + $manualOvertimeSeconds,
             'preassigned_overtime_seconds' => $preassignedOvertimeSeconds,
             'additional_overtime_seconds' => $manualOvertimeSeconds,
@@ -557,7 +591,7 @@ class PayrollCalculationService
         }
 
         if ($this->isFullyJustifiedAbsence($review)) {
-            return (int) $review->expected_ordinary_seconds;
+            return $this->paidDayOffSeconds($review);
         }
 
         if ($this->isPayableUnscheduledWork($review)) {
@@ -616,6 +650,25 @@ class PayrollCalculationService
         return $this->hoursToSeconds($this->fallbackDailyHours($employee));
     }
 
+    private function validOffWorkedSeconds(DailyTimeReview $review): int
+    {
+        $verified = max((int) $review->off_worked_verified_seconds, 0);
+        $required = $review->offWorkedRequiredSeconds();
+
+        return $review->off_worked && $review->paid_day_off && $review->payrollPeriod
+            && app(TrackabiActivityCoverageService::class)->applies($review->payrollPeriod)
+            && ! $review->hasTrackabiTimer() && (int) ($review->trackabiActivity?->measured_activity_seconds ?? 0) === 0
+            && $required > 0 && $verified > 0 && $verified <= $required
+            ? $verified : 0;
+    }
+
+    private function offWorkedUnscheduledSeconds(DailyTimeReview $review): int
+    {
+        return $review->employee && ! $review->scheduled_work_day && $this->isRotatingSchedule($review->employee)
+            && $this->validOffWorkedSeconds($review) > 0
+            ? $review->offWorkedRequiredSeconds() : 0;
+    }
+
     private function hoursToSeconds(float $hours): int
     {
         return max((int) round($hours * 3600), 0);
@@ -631,7 +684,10 @@ class PayrollCalculationService
             : $review->payrollPeriod()->first();
         $ptoSeconds = $period?->pto_included_in_total ? 0 : max((int) $review->pto_seconds, 0);
         $holidaySeconds = $period?->holiday_included_in_total ? 0 : max((int) $review->holiday_seconds, 0);
-        $paidTimeNotTrackedSeconds = (int) $review->hubstaff_total_seconds > 0
+        $paidTimeNotTrackedSeconds = (! $review->hasUntrackedDirectAbsence()
+            && ((int) $review->hubstaff_total_seconds > 0 || $review->usesMeasuredActivity()
+            || ($period && app(TrackabiActivityCoverageService::class)->applies($period)))
+            )
             ? max((int) $review->paid_time_not_tracked_seconds, 0)
             : 0;
 
@@ -658,10 +714,17 @@ class PayrollCalculationService
             return 0;
         }
 
+        if (! $review->scheduled_work_day && $review->hasUntrackedDirectAbsence()) {
+            return max($review->untrackedDayReviewSeconds() - (int) $review->justified_absence_seconds, 0);
+        }
+
         $requiredSeconds = $review->assigned_overtime_fulfilled
             ? $this->requiredSeconds($review)
             : (int) $review->expected_ordinary_seconds;
-        $paidTimeNotTrackedSeconds = (int) $review->hubstaff_total_seconds > 0
+        $paidTimeNotTrackedSeconds = (! $review->hasUntrackedDirectAbsence()
+            && ((int) $review->hubstaff_total_seconds > 0 || $review->usesMeasuredActivity()
+            || ($review->payrollPeriod && app(TrackabiActivityCoverageService::class)->applies($review->payrollPeriod)))
+            )
             ? (int) $review->paid_time_not_tracked_seconds
             : 0;
 
@@ -676,10 +739,20 @@ class PayrollCalculationService
 
     private function isFullyJustifiedAbsence(DailyTimeReview $review): bool
     {
-        return ! $review->paid_day_off
-            && (int) $review->hubstaff_total_seconds <= 0
-            && (int) $review->justified_absence_seconds > 0
-            && (int) $review->unjustified_absence_seconds <= 0;
+        if ($review->paid_day_off || (int) $review->justified_absence_seconds <= 0
+            || (int) $review->unjustified_absence_seconds > 0) {
+            return false;
+        }
+
+        $period = $review->payrollPeriod;
+        $direct = $period && app(TrackabiActivityCoverageService::class)->applies($period);
+        $hasMeasuredWork = $direct
+            ? ($review->verified_tracked_seconds !== null
+                ? (int) $review->verified_tracked_seconds > 0
+                : (int) ($review->trackabiActivity?->measured_activity_seconds ?? 0) > 0)
+            : (int) $review->hubstaff_total_seconds > 0;
+
+        return ! $hasMeasuredWork;
     }
 
     private function isPayableUnscheduledWork(DailyTimeReview $review): bool
@@ -738,6 +811,11 @@ class PayrollCalculationService
     {
         return (float) $reviews->sum(function (DailyTimeReview $review): float {
             if ($review->expected_ordinary_seconds <= 0) {
+                if (($review->paid_day_off || $this->isFullyJustifiedAbsence($review))
+                    && $this->isRotatingSchedule($review->employee)) {
+                    return 1.0;
+                }
+
                 return $this->regularPayableSeconds($review) > 0 ? 1.0 : 0.0;
             }
 
@@ -747,6 +825,7 @@ class PayrollCalculationService
 
     private function redistributeAssignedOvertime(PayrollPeriod $period, Employee $employee): void
     {
+        $direct = app(TrackabiActivityCoverageService::class)->applies($period);
         $reviews = DailyTimeReview::query()
             ->where('payroll_period_id', $period->id)
             ->where('employee_id', $employee->id)
@@ -820,6 +899,7 @@ class PayrollCalculationService
                 $assignedOutsidePeriod,
                 &$periodRemainingSeconds,
                 $hasPeriodLimit,
+                $direct,
             ): void {
                 $remainingSeconds = max(
                     $weeklyAssignedSeconds - (int) $assignedOutsidePeriod->get($weekKey, 0),
@@ -830,7 +910,7 @@ class PayrollCalculationService
                     $remainingSeconds = min($remainingSeconds, $periodRemainingSeconds);
                 }
 
-                $orderedReviews = $weekReviews->sort(function (DailyTimeReview $left, DailyTimeReview $right): int {
+                $orderedReviews = $weekReviews->sort(function (DailyTimeReview $left, DailyTimeReview $right) use ($direct): int {
                     $confirmationComparison = (int) $right->assigned_overtime_fulfilled
                         <=> (int) $left->assigned_overtime_fulfilled;
 
@@ -850,8 +930,10 @@ class PayrollCalculationService
                         return $reviewedComparison;
                     }
 
-                    $leftExcess = max((int) $left->hubstaff_total_seconds - (int) $left->expected_ordinary_seconds, 0);
-                    $rightExcess = max((int) $right->hubstaff_total_seconds - (int) $right->expected_ordinary_seconds, 0);
+                    $leftTracked = $direct ? (int) ($left->trackabiActivity?->measured_activity_seconds ?? 0) : (int) $left->hubstaff_total_seconds;
+                    $rightTracked = $direct ? (int) ($right->trackabiActivity?->measured_activity_seconds ?? 0) : (int) $right->hubstaff_total_seconds;
+                    $leftExcess = max($leftTracked - (int) $left->expected_ordinary_seconds, 0);
+                    $rightExcess = max($rightTracked - (int) $right->expected_ordinary_seconds, 0);
                     $excessComparison = $rightExcess <=> $leftExcess;
 
                     return $excessComparison !== 0
@@ -861,7 +943,7 @@ class PayrollCalculationService
 
                 foreach ($orderedReviews as $review) {
                     $isWorkday = $review->scheduled_work_day
-                        && (int) $review->hubstaff_total_seconds > 0
+                        && ($direct || (int) $review->hubstaff_total_seconds > 0)
                         && ! $review->paid_day_off
                         && $this->scheduleTypeForReview($employee, $review) !== 'rotativa';
                     $assignedSeconds = $isWorkday
@@ -1006,6 +1088,46 @@ class PayrollCalculationService
         }
 
         $this->redistributeAssignedOvertime($period, $employee);
+        $this->refreshPendingActivityBasis($period, $employee);
+        app(TrackabiActivityCoverageService::class)->reconcileEmployee($period, $employee);
+    }
+
+    private function refreshPendingActivityBasis(PayrollPeriod $period, Employee $employee): void
+    {
+        $activities = TrackabiDailyActivity::query()->where('payroll_period_id', $period->id)
+            ->where('employee_id', $employee->id)->get()
+            ->keyBy(fn (TrackabiDailyActivity $activity): string => $activity->activity_date->toDateString());
+        if ($activities->isEmpty()) {
+            return;
+        }
+
+        $reviews = DailyTimeReview::query()->where('payroll_period_id', $period->id)
+            ->where('employee_id', $employee->id)->get();
+        foreach ($reviews as $review) {
+            $activity = $activities->get($review->date->toDateString());
+            if (! $activity || $review->status !== 'pendiente' || $review->paid_day_off
+                || $employee->paid_without_tracking || $review->lost_time_source !== 'trackabi_insights_activity'
+                || (int) $review->supervisor_adjustment_seconds !== 0
+                || (int) $review->justified_absence_seconds !== 0) {
+                continue;
+            }
+
+            $target = max((int) $review->expected_hubstaff_seconds, 0);
+            $measured = max((int) $activity->measured_activity_seconds, 0);
+            $shortfall = $review->hasUntrackedDirectAbsence()
+                ? $review->untrackedDayReviewSeconds()
+                : max($target - $measured, 0);
+            $review->update([
+                'estimated_lost_seconds' => $shortfall,
+                'unjustified_absence_seconds' => $shortfall,
+                'lost_time_estimate_metadata' => [
+                    ...($review->lost_time_estimate_metadata ?? []),
+                    'target_seconds' => $target,
+                    'measured_seconds' => $measured,
+                ],
+            ]);
+            $this->calculateDailyReview($review, $employee);
+        }
     }
 
     private function applyScheduleExpectation(DailyTimeReview $review, Employee $employee): void
@@ -1042,6 +1164,14 @@ class PayrollCalculationService
         $review->expected_paid_seconds = $expectedPaidSeconds;
         $review->expected_hubstaff_seconds = $expectedHubstaffSeconds;
         $review->paid_time_not_tracked_seconds = (int) $expectation['paid_time_not_tracked_seconds'];
+
+        if ($review->payrollPeriod && app(TrackabiActivityCoverageService::class)->applies($review->payrollPeriod)
+            && $review->verified_tracked_seconds === null && $review->trackabiActivity) {
+            $measured = (int) $review->trackabiActivity->measured_activity_seconds;
+            $allowance = $this->trackabiPaidActivityService->allowanceSeconds($review, $measured);
+            $review->paid_time_not_tracked_seconds = $allowance;
+            $review->expected_hubstaff_seconds = max($expectedPaidSeconds - $allowance, 0);
+        }
 
         app(SeptemberSecondHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
     }
@@ -1122,6 +1252,16 @@ class PayrollCalculationService
     private function normalizedManualReviewState(DailyTimeReview $review, array $fields): array
     {
         $state = $review->only($fields);
+        if ($review->status === 'pendiente'
+            && $review->payrollPeriod
+            && app(TrackabiActivityCoverageService::class)->applies($review->payrollPeriod)
+            && in_array($review->lost_time_source,
+                [null, 'trackabi_insights_activity', 'historical_estimate', 'missing_activity', 'missing_timer'], true)
+            && (int) $review->supervisor_adjustment_seconds === 0
+            && (int) $review->justified_absence_seconds === 0) {
+            unset($state['estimated_lost_seconds'], $state['unjustified_absence_seconds'],
+                $state['lost_time_estimate_metadata'], $state['lost_time_source']);
+        }
         $state['reviewed_at'] = $review->reviewed_at?->toDateTimeString();
         $state['verified_tracked_at'] = $review->verified_tracked_at?->toDateTimeString();
 

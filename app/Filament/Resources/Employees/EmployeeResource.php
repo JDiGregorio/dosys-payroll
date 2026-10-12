@@ -22,6 +22,7 @@ use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
+use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\IconColumn;
@@ -112,6 +113,17 @@ class EmployeeResource extends Resource
             TextInput::make('hubstaff_name')
                 ->label('Nombre Hubstaff')
                 ->maxLength(255),
+            Section::make('Integración Trackabi')->schema([
+                TextInput::make('trackabi_member_id')
+                    ->label('Trackabi Member ID')
+                    ->numeric()->integer()->minValue(1)->unique(ignoreRecord: true),
+                TextInput::make('trackabi_email')
+                    ->label('Trackabi Email')
+                    ->email()->maxLength(255),
+                TextInput::make('trackabi_name')
+                    ->label('Nombre Trackabi (Insights)')
+                    ->maxLength(255),
+            ])->columns(3),
             Select::make('campaign_id')->label('Campaña')->relationship('campaign', 'name')->searchable()->preload()->required(),
             Select::make('team_id')->label('Team')->relationship('team', 'name')->searchable()->preload()->required(),
             Select::make('department_id')->label('Departamento')->relationship('department', 'name')->searchable()->preload()->required(),
@@ -174,9 +186,10 @@ class EmployeeResource extends Resource
                 ->preload()
                 ->nullable(),
             Select::make('salary_calculation_method')->label('Método de cálculo salarial')->options(self::salaryCalculationMethodOptions())->default('hourly_actual_hours')->required(),
+            Toggle::make('paid_without_tracking')->label('Pago sin registro de tiempo')->default(false),
             Toggle::make('salary_values_are_manual')->label('Valores salariales manuales')->helperText('Los valores de esta ficha tienen prioridad sobre Tier y fórmulas sugeridas.')->default(true),
             TextInput::make('ordinary_weekly_hours')->label('Horas ordinarias semanales')->helperText('No incluir horas extra preasignadas.')->numeric()->minValue(0)->default(0),
-            TextInput::make('daily_hours')->label('Horas diarias')->numeric()->minValue(0)->default(0),
+            TextInput::make('daily_hours')->label('Horas diarias')->numeric()->minValue(0)->maxValue(12)->default(0),
             TextInput::make('calendar_days')->label('Días')->numeric()->default(30)->readOnly(),
 
             TextInput::make('monthly_salary')->label('Salario mensual')->numeric()->minValue(0)->default(0),

@@ -163,6 +163,13 @@ class TrackabiImportService
      */
     private function buildPlan(PayrollPeriod $period, string $campaignName, CarbonInterface $from, CarbonInterface $to): array
     {
+        if (! config('trackabi.mindcloud_enabled')
+            || ! in_array($period->fresh()->status, ['borrador', 'importado', 'en_revision'], true)
+            || (config('trackabi_direct.cutover_date')
+                && $period->ends_at->toDateString() >= config('trackabi_direct.cutover_date'))) {
+            throw new RuntimeException('MindCloud legacy no puede importar este período.');
+        }
+
         if ($from->lt($period->starts_at) || $to->gt($period->ends_at)) {
             throw new RuntimeException('El rango Trackabi debe estar dentro del período de planilla seleccionado.');
         }

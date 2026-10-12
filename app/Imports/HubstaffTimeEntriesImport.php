@@ -29,6 +29,10 @@ class HubstaffTimeEntriesImport implements ToCollection, WithHeadingRow
 
     public function collection(Collection $rows): void
     {
+        if (! in_array($this->period->fresh()->status, ['borrador', 'importado', 'en_revision'], true)) {
+            throw new RuntimeException('No se puede importar Hubstaff en un período aprobado o cerrado.');
+        }
+
         DB::transaction(function () use ($rows): void {
             $count = 0;
 

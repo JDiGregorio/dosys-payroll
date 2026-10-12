@@ -19,12 +19,13 @@
         ['Salario por día', $money($result->daily_rate)],
         ['Salario por hora', $money($result->hourly_rate)],
         ['Precio hora extra', $money($result->overtime_hourly_rate)],
-        ['Días trabajados', $number($result->displayWorkedDays())],
+        ['Días pagables (equiv.)', $number($result->displayWorkedDays())],
         ['Total salario quincenal', $money($result->worked_salary_amount)],
     ];
 
     $bonusRows = [
         ['Total horas extra', $result->overtime_amount, true],
+        ['Día OFF trabajado (adicional)', $result->off_worked_extra_amount, (float) $result->off_worked_extra_amount !== 0.0],
         ...app(\App\Services\PayrollVoucherBonusPresenter::class)->extraBonusRows($result),
         ['Subsidio por internet', $result->internet_subsidy_amount, (float) $result->internet_subsidy_amount !== 0.0],
         ['Bono QA', $result->qa_bonus_amount, (float) $result->qa_bonus_amount !== 0.0],

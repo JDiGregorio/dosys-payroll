@@ -21,6 +21,13 @@ class HubstaffImportTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        config(['trackabi.provider' => 'mindcloud', 'trackabi.mindcloud_enabled' => true,
+            'trackabi_direct.cutover_date' => null]);
+    }
+
     public function test_all_campaigns_import_counts_full_logged_time_and_preserves_reviewed_entries(): void
     {
         config(['trackabi.enabled' => true, 'trackabi.api_base_url' => 'https://trackabi.test',

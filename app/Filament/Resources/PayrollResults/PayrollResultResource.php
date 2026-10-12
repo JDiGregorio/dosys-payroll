@@ -118,7 +118,7 @@ class PayrollResultResource extends Resource
                             TextInput::make('hourly_rate')->label('Pago por hora')->numeric(),
                             TextInput::make('overtime_hourly_rate')->label('Valor hora extra')->numeric(),
                             TextInput::make('display_worked_days')
-                                ->label('Días trabajados')
+                                ->label('Días pagables (equiv.)')
                                 ->disabled()
                                 ->dehydrated(false)
                                 ->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record?->displayWorkedDays() ?? 0)),
@@ -137,6 +137,7 @@ class PayrollResultResource extends Resource
                                 )),
                             TextInput::make('lost_time_amount')->label('Impacto del tiempo perdido')->numeric()->readOnly(),
                             TextInput::make('extra_bonuses_amount')->label('Bonos extras')->numeric(),
+                            TextInput::make('off_worked_extra_amount')->label('Adicional OFF trabajado')->numeric()->readOnly(),
                             TextInput::make('preassigned_overtime_hours')->label('Horas extra preasignadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToDecimalHours((int) $record->preassigned_overtime_seconds) : 0)),
                             TextInput::make('additional_overtime_hours')->label('Horas extra adicionales')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToDecimalHours((int) $record->additional_overtime_seconds) : 0)),
                             TextInput::make('overtime_amount')->label('Total pago horas extras')->numeric(),
@@ -182,7 +183,7 @@ class PayrollResultResource extends Resource
                 TextColumn::make('monthly_salary')->label('Salario mensual')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('biweekly_salary_amount')->label('Pago quincenal')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('daily_rate')->label('Pago por día')->money('HNL', locale: 'en-US'),
-                TextColumn::make('worked_days')->label('Días trabajados')->state(fn (PayrollResult $record): float => $record->displayWorkedDays()),
+                TextColumn::make('worked_days')->label('Días pagables (equiv.)')->state(fn (PayrollResult $record): float => $record->displayWorkedDays()),
                 TextColumn::make('worked_salary_amount')->label('Salario')->money('HNL', locale: 'en-US'),
                 TextColumn::make('lost_time_seconds')
                     ->label('Tiempo perdido')
@@ -190,6 +191,7 @@ class PayrollResultResource extends Resource
                     ->alignRight(),
                 TextColumn::make('lost_time_amount')->label('Impacto tiempo perdido')->money('HNL', locale: 'en-US'),
                 TextColumn::make('extra_bonuses_amount')->label('Bonos extras')->money('HNL', locale: 'en-US'),
+                TextColumn::make('off_worked_extra_amount')->label('Adicional OFF trabajado')->money('HNL', locale: 'en-US')->toggleable(),
                 TextColumn::make('preassigned_overtime_seconds')->label('Extra preasignada')->state(fn (PayrollResult $record) => app(TimeParserService::class)->secondsToDecimalHours((int) $record->preassigned_overtime_seconds))->toggleable(),
                 TextColumn::make('additional_overtime_seconds')->label('Extra adicional')->state(fn (PayrollResult $record) => app(TimeParserService::class)->secondsToDecimalHours((int) $record->additional_overtime_seconds))->toggleable(),
                 TextColumn::make('overtime_amount')->label('Pago horas extras')->money('HNL', locale: 'en-US'),

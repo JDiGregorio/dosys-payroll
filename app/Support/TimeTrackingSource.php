@@ -21,10 +21,15 @@ class TimeTrackingSource
                 ->when($date, fn ($query) => $query->whereDate('date', $date))
                 ->distinct()->pluck('source_provider');
             if ($providers->isNotEmpty()) {
-                $trackabi = $providers->contains(fn ($provider) => in_array($provider, ['trackabi', 'trackabi_api'], true));
+                $direct = $providers->contains('trackabi_api');
+                $legacy = $providers->contains('trackabi');
                 $hubstaff = $providers->contains(fn ($provider) => ! in_array($provider, ['trackabi', 'trackabi_api'], true));
 
-                return $trackabi ? ($hubstaff ? 'Trackabi / Hubstaff' : 'Trackabi') : 'Hubstaff';
+                if ($direct) {
+                    return $legacy || $hubstaff ? 'Fuentes mixtas' : 'Trackabi API';
+                }
+
+                return $legacy ? ($hubstaff ? 'Trackabi / Hubstaff' : 'Trackabi histórico') : 'Hubstaff';
             }
         }
 

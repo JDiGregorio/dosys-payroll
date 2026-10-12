@@ -29,6 +29,7 @@ class HubstaffTimeEntry extends Model
             'holiday_spent' => 'decimal:2',
             'raw_payload' => 'array',
             'active' => 'boolean',
+            'trackabi_project_id' => 'integer',
         ];
     }
 
