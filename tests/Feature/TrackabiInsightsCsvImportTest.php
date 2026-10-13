@@ -302,6 +302,63 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $this->assertSame((int) $before->hubstaff_total_seconds, (int) $after->hubstaff_total_seconds);
     }
 
+    public function test_applied_justification_survives_other_review_recalculation_and_csv_reimport(): void
+    {
+        config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
+            'trackabi_direct.insights_paid_break_minutes' => 15]);
+        $user = User::query()->create([
+            'name' => 'RRHH', 'email' => 'rrhh-persistent-review@example.com',
+            'password' => 'password', 'profile' => 'rrhh', 'active' => true,
+        ]);
+        $review = $this->review();
+        $original = $this->csv("\"Aguilar, Dereck\",09:00,09:00,07:00,00:22\n");
+        $importer = app(TrackabiInsightsCsvImportService::class);
+        $importer->import($this->period, Carbon::parse('2026-10-09'), $original);
+        $this->actingAs($user);
+
+        Livewire::test(EditDailyTimeReview::class, ['record' => $review->id])
+            ->set('data.direct_justified_hours', '0:20')
+            ->set('data.supervisor_comment', 'Justificación verificada')
+            ->call('save')
+            ->assertHasNoErrors();
+
+        $applied = $review->fresh();
+        $this->assertSame('revisado_supervisor', $applied->status);
+        $this->assertSame(1200, (int) $applied->justified_absence_seconds);
+        $this->assertSame(27720, (int) $applied->payable_seconds);
+
+        $other = DailyTimeReview::query()->where('payroll_period_id', $this->period->id)
+            ->where('employee_id', $this->employee->id)->whereDate('date', '2026-10-08')->firstOrFail();
+        $other->update([
+            'paid_day_off' => true,
+            'status' => 'revisado_supervisor', 'supervisor_comment' => 'Día OFF',
+        ]);
+        app(PayrollCalculationService::class)->recalculateEmployeePreservingManual($this->period, $this->employee);
+        $importer->import($this->period, Carbon::parse('2026-10-09'), $original);
+        $payrollBeforeCorrection = PayrollResult::query()->where('payroll_period_id', $this->period->id)
+            ->where('employee_id', $this->employee->id)->firstOrFail();
+        $approvedSalary = (float) $payrollBeforeCorrection->worked_salary_amount;
+        $approvedLostAmount = (float) $payrollBeforeCorrection->lost_time_amount;
+
+        $corrected = $this->csv("\"Aguilar, Dereck\",09:00,09:00,05:30,00:30\n", 'corrected-after-review.csv');
+        $importer->import($this->period, Carbon::parse('2026-10-09'), $corrected);
+        app(PayrollCalculationService::class)->recalculateEmployeePreservingManual($this->period, $this->employee);
+
+        $after = $review->fresh();
+        $this->assertSame($applied->status, $after->status);
+        $this->assertSame($applied->reviewed_by, $after->reviewed_by);
+        $this->assertSame($applied->supervisor_comment, $after->supervisor_comment);
+        $this->assertSame((int) $applied->justified_absence_seconds, (int) $after->justified_absence_seconds);
+        $this->assertSame((int) $applied->payable_seconds, (int) $after->payable_seconds);
+        $this->assertTrue($other->fresh()->paid_day_off);
+        $payrollAfterCorrection = $payrollBeforeCorrection->fresh();
+        $this->assertEqualsWithDelta($approvedSalary, (float) $payrollAfterCorrection->worked_salary_amount, 0.01);
+        $this->assertEqualsWithDelta($approvedLostAmount, (float) $payrollAfterCorrection->lost_time_amount, 0.01);
+        $this->assertDatabaseHas('tracking_import_alerts', [
+            'code' => 'TRACKABI_ACTIVITY_DATA_AFTER_REVIEW', 'resolved' => false,
+        ]);
+    }
+
     public function test_direct_no_record_off_worked_form_requires_hours_then_pays_double_day(): void
     {
         $user = User::query()->create([
