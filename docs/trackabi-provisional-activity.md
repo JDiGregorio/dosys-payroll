@@ -29,6 +29,27 @@ reporte de quincena entre fechas.
   Payroll sigue calculando salario y OT con sus reglas existentes; el CSV no
   equivale directamente a horas pagables.
 
+Para días con actividad positiva, el crédito pagado no trackeado es
+`min(max(horas esperadas pagadas - actividad medida, 0), lunch + breaks)`.
+No se aplica crédito en días sin actividad, ni se genera overtime por exceder
+la jornada. Los máximos por jornada son RRD 80 minutos (60+10+10), BDC/
+AUTO FINANCE CENTER 90 (60+15+15), y Palmetto 70 (60+10). Victor Vasquez,
+Marco Lara y Kelly Urquia tienen 90 minutos dentro de Palmetto. El crédito
+es una política de pago, no una medición de pausas realmente tomadas.
+Así, desaparece el antiguo salto de «sin crédito hasta superar 1:15»; solo
+el faltante que excede el crédito requiere justificación.
+
+Para un período Direct ya revisado, ejecutar primero
+`./vendor/bin/sail artisan trackabi:preview-paid-time --period=ID`.
+`--details` muestra los días afectados. Una vez verificado el resumen,
+`--apply` ajusta los días pendientes y prorratea en cada revisión aplicada
+la misma fracción de pérdida que el supervisor había justificado: si justificó
+todo, el nuevo faltante queda totalmente justificado; si no justificó nada,
+permanece íntegro como pérdida. No modifica actividad CSV, comentarios,
+estados, bonos ni deducciones. Un día aplicado con datos inconsistentes o
+modificados después de la revisión bloquea la aplicación completa y requiere
+revisión manual. Repetir `--apply` no vuelve a prorratear un día ya ajustado.
+
 La actividad se guarda sin capear en `trackabi_daily_activities`, con valores
 originales del CSV y lote/hash. `logged_time` permanece independiente y solo
 sirve para auditoría/anomalías, nunca como tiempo trabajado en períodos desde

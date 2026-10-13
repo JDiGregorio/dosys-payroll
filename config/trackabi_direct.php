@@ -13,6 +13,16 @@ return [
     'max_entry_hours' => (int) env('TRACKABI_DIRECT_MAX_ENTRY_HOURS', 24),
     'insights_paid_lunch_minutes' => (int) env('TRACKABI_INSIGHTS_PAID_LUNCH_MINUTES', 60),
     'insights_paid_break_minutes' => (int) env('TRACKABI_INSIGHTS_PAID_BREAK_MINUTES', 15),
+    'insights_paid_time_policies' => [
+        'RRD FINANCIAL' => ['lunch_minutes' => 60, 'break_minutes' => 20],
+        'AUTO FINANCE CENTER' => ['lunch_minutes' => 60, 'break_minutes' => 30],
+        'PALMETTO' => ['lunch_minutes' => 60, 'break_minutes' => 10],
+    ],
+    'insights_special_paid_time_member_ids' => [
+        63566 => ['lunch_minutes' => 60, 'break_minutes' => 30], // Victor Vasquez
+        63567 => ['lunch_minutes' => 60, 'break_minutes' => 30], // Marco Lara
+        63565 => ['lunch_minutes' => 60, 'break_minutes' => 30], // Kelly Urquia
+    ],
 
     // Reserved for an activity provider with a confirmed response contract.
     'activity_enabled' => env('TRACKABI_DIRECT_ACTIVITY_ENABLED', false),

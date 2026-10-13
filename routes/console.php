@@ -17,6 +17,9 @@ use App\Services\Trackabi\HistoricalLostTimeEstimator;
 use App\Services\Trackabi\HistoricalTimeAnalysis;
 use App\Services\Trackabi\TrackabiDirectImportService;
 use App\Services\Trackabi\TrackabiImportService;
+use App\Services\Trackabi\TrackabiPaidTimePolicyPreviewService;
+use App\Services\Trackabi\TrackabiActivityCoverageService;
+use App\Services\Trackabi\TrackabiPaidTimePolicyApplyService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -218,6 +221,67 @@ Artisan::command(
         return self::SUCCESS;
     },
 )->purpose('Recalcula un período sin sobrescribir información manual.');
+
+Artisan::command('trackabi:preview-paid-time {--period= : ID del período} {--details : Muestra cada fecha afectada} {--apply : Ajusta revisiones aplicadas proporcionalmente y recalcula el período}', function (TrackabiPaidTimePolicyPreviewService $preview, TrackabiPaidTimePolicyApplyService $applier, TrackabiActivityCoverageService $coverage, TimeParserService $parser): int {
+    $period = PayrollPeriod::query()->find((int) $this->option('period'));
+    if (! $period || ! $coverage->applies($period)) {
+        $this->error('Indica un período de Trackabi Direct con --period.');
+
+        return self::FAILURE;
+    }
+
+    $rows = $preview->preview($period);
+    $eligible = $rows->filter(fn (array $row): bool => $row['eligible'] && $row['current_allowance_seconds'] !== $row['proposed_allowance_seconds']);
+    $applied = $rows->filter(fn (array $row): bool => $row['status'] !== 'pendiente' && $row['current_allowance_seconds'] !== $row['proposed_allowance_seconds']);
+    $applicable = $applied->filter(fn (array $row): bool => $row['reviewed_eligible']);
+    $unsafe = $applied->reject(fn (array $row): bool => $row['reviewed_eligible']);
+    $pendingManual = $rows->filter(fn (array $row): bool => $row['status'] === 'pendiente' && ! $row['eligible']
+        && $row['current_allowance_seconds'] !== $row['proposed_allowance_seconds']);
+
+    $this->table(['Campaña', 'Pendientes que cambiarían', 'Faltante actual', 'Faltante propuesto', 'Aplicados ajustables', 'Aplicados manuales'],
+        $rows->groupBy('campaign')->map(function ($campaignRows, string $campaign) use ($parser): array {
+            $pending = $campaignRows->filter(fn (array $row): bool => $row['eligible'] && $row['current_allowance_seconds'] !== $row['proposed_allowance_seconds']);
+            $applied = $campaignRows->filter(fn (array $row): bool => $row['status'] !== 'pendiente' && $row['current_allowance_seconds'] !== $row['proposed_allowance_seconds']);
+
+            return [$campaign, $pending->count(), $parser->secondsToHourMinute((int) $pending->sum('current_shortfall_seconds')),
+                $parser->secondsToHourMinute((int) $pending->sum('proposed_shortfall_seconds')),
+                $applied->where('reviewed_eligible', true)->count(), $applied->where('reviewed_eligible', false)->count()];
+        })->values()->all());
+
+    $this->line('Días pendientes que cambiarían: '.$eligible->count().'. Revisiones aplicadas ajustables: '.$applicable->count()
+        .'. Revisiones aplicadas para revisar manualmente: '.$unsafe->count()
+        .'. Pendientes con ajustes manuales protegidos: '.$pendingManual->count().'.');
+    if ($this->option('details')) {
+        $this->table(['Empleado', 'Fecha', 'Estado', 'Crédito actual', 'Crédito propuesto', 'Faltante actual', 'Faltante propuesto', 'Justificado propuesto'],
+            $rows->filter(fn (array $row): bool => $row['current_allowance_seconds'] !== $row['proposed_allowance_seconds'])
+                ->map(fn (array $row): array => [$row['employee'], $row['date'], $row['eligible'] ? 'Pendiente' : ($row['reviewed_eligible'] ? 'Aplicado ajustable' : 'Manual protegido'),
+                    $parser->secondsToHourMinute($row['current_allowance_seconds']), $parser->secondsToHourMinute($row['proposed_allowance_seconds']),
+                    $parser->secondsToHourMinute($row['current_shortfall_seconds']), $parser->secondsToHourMinute($row['proposed_shortfall_seconds']),
+                    $parser->secondsToHourMinute($row['proposed_justified_seconds'])])->all());
+    }
+    if (! $this->option('apply')) {
+        $this->info('Vista previa: no se modificaron datos.');
+
+        return self::SUCCESS;
+    }
+
+    if ($period->status === 'cerrado' || $unsafe->isNotEmpty()) {
+        $this->error('Período cerrado o revisiones aplicadas que requieren intervención manual; no se modificaron datos.');
+
+        return self::FAILURE;
+    }
+
+    try {
+        $changed = $applier->apply($period);
+    } catch (Throwable $exception) {
+        $this->error($exception->getMessage());
+
+        return self::FAILURE;
+    }
+    $this->info("Revisiones aplicadas ajustadas proporcionalmente: {$changed}. Período recalculado; comentarios, estados y bonos conservados.");
+
+    return self::SUCCESS;
+})->purpose('Previsualiza o aplica créditos de almuerzo/break Trackabi y prorratea justificaciones ya aplicadas.');
 
 Artisan::command(
     'trackabi:import {--period= : ID del período de planilla} {--campaign=all : Campaña o all} {--from= : Fecha inicial YYYY-MM-DD} {--to= : Fecha final YYYY-MM-DD} {--dry-run : Solo muestra vista previa} {--commit : Guarda los registros y recalcula empleados afectados} {--prefer-trackabi-on-conflict : Solo importador legacy} {--estimate-palmetto-real-time : Solo importador legacy} {--estimated-loss-max-minutes=28 : Solo importador legacy}',

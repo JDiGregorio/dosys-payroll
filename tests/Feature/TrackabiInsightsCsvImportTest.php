@@ -41,7 +41,9 @@ class TrackabiInsightsCsvImportTest extends TestCase
         parent::setUp();
         config(['trackabi.provider' => 'direct', 'trackabi_direct.cutover_date' => '2026-09-26',
             'trackabi_direct.insights_paid_lunch_minutes' => 0,
-            'trackabi_direct.insights_paid_break_minutes' => 0]);
+            'trackabi_direct.insights_paid_break_minutes' => 0,
+            'trackabi_direct.insights_paid_time_policies' => [],
+            'trackabi_direct.insights_special_paid_time_member_ids' => []]);
         Storage::fake('local');
         Http::preventStrayRequests();
         $campaign = Campaign::query()->create(['name' => 'RRD FINANCIAL']);
@@ -136,7 +138,7 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $this->assertSame(19740, (int) $review->fresh()->trackabiActivity->measured_activity_seconds);
     }
 
-    public function test_calendar_leaves_short_gap_visible_without_lunch_credit_or_idle(): void
+    public function test_calendar_credits_short_gap_within_paid_break_policy(): void
     {
         config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
             'trackabi_direct.insights_paid_break_minutes' => 15]);
@@ -151,8 +153,8 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $this->actingAs($user)
             ->get("/admin/daily-review-calendar?period_id={$this->period->id}&employee_id={$this->employee->id}")
             ->assertOk()
-            ->assertSee('7:22 h')
-            ->assertSee('-0:38 h')
+            ->assertSee('8:00 h')
+            ->assertSee('0:00 h')
             ->assertDontSee('Idle');
     }
 
@@ -174,22 +176,22 @@ class TrackabiInsightsCsvImportTest extends TestCase
             ->assertSee("/admin/daily-time-reviews/{$review->id}/edit");
     }
 
-    public function test_shortfall_at_or_below_lunch_break_is_left_for_supervisor_review(): void
+    public function test_shortfall_up_to_paid_break_policy_is_credited_without_overpaying(): void
     {
         config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
             'trackabi_direct.insights_paid_break_minutes' => 15]);
         $review = $this->review();
         $path = $this->csv("\"Aguilar, Dereck\",09:00,09:00,07:00,00:22\n");
         app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
-        $this->assertSame(26520, (int) $review->fresh()->payable_seconds);
-        $this->assertSame(2280, (int) $review->fresh()->estimated_lost_seconds);
-        $this->assertSame(0, (int) $review->fresh()->paid_time_not_tracked_seconds);
+        $this->assertSame(28800, (int) $review->fresh()->payable_seconds);
+        $this->assertSame(0, (int) $review->fresh()->estimated_lost_seconds);
+        $this->assertSame(2280, (int) $review->fresh()->paid_time_not_tracked_seconds);
 
         $exact = $this->csv("\"Aguilar, Dereck\",09:00,09:00,06:00,00:45\n", 'exact-boundary.csv');
         app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $exact);
-        $this->assertSame(24300, (int) $review->fresh()->payable_seconds);
-        $this->assertSame(4500, (int) $review->fresh()->estimated_lost_seconds);
-        $this->assertSame(0, (int) $review->fresh()->paid_time_not_tracked_seconds);
+        $this->assertSame(28800, (int) $review->fresh()->payable_seconds);
+        $this->assertSame(0, (int) $review->fresh()->estimated_lost_seconds);
+        $this->assertSame(4500, (int) $review->fresh()->paid_time_not_tracked_seconds);
 
         $above = $this->csv("\"Aguilar, Dereck\",09:00,09:00,06:00,00:44\n", 'above-boundary.csv');
         app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $above);
@@ -203,7 +205,7 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $this->assertSame(0, (int) $review->fresh()->paid_time_not_tracked_seconds);
     }
 
-    public function test_profile_lunch_does_not_credit_shortfall_below_threshold_twice(): void
+    public function test_profile_lunch_is_capped_by_missing_time_and_not_credited_twice(): void
     {
         config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
             'trackabi_direct.insights_paid_break_minutes' => 15]);
@@ -213,9 +215,9 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $path = $this->csv("\"Aguilar, Dereck\",09:00,09:00,07:00,00:00\n");
         app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
 
-        $this->assertSame(0, (int) $review->fresh()->paid_time_not_tracked_seconds);
-        $this->assertSame(28800, (int) $review->fresh()->expected_hubstaff_seconds);
-        $this->assertSame(25200, (int) $review->fresh()->payable_seconds);
+        $this->assertSame(3600, (int) $review->fresh()->paid_time_not_tracked_seconds);
+        $this->assertSame(25200, (int) $review->fresh()->expected_hubstaff_seconds);
+        $this->assertSame(28800, (int) $review->fresh()->payable_seconds);
     }
 
     public function test_rotating_day_retains_one_hour_lunch_credit_below_general_threshold(): void
@@ -230,6 +232,209 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $this->assertSame(3600, $service->allowanceSeconds($review, 39600));
         $this->assertSame(39600, $service->trackableTargetSeconds($review, 39600));
         $this->assertSame(4500, $service->allowanceSeconds($review, 37800));
+    }
+
+    public function test_paid_break_policy_follows_campaign_and_palmetto_member_exceptions(): void
+    {
+        $configured = require base_path('config/trackabi_direct.php');
+        config(['trackabi_direct.insights_paid_time_policies' => $configured['insights_paid_time_policies'],
+            'trackabi_direct.insights_special_paid_time_member_ids' => $configured['insights_special_paid_time_member_ids']]);
+        $review = $this->review();
+        $service = app(TrackabiPaidActivityService::class);
+
+        $this->assertSame(4800, $service->allowanceSeconds($review, 21600));
+        $palmetto = Campaign::query()->create(['name' => 'PALMETTO']);
+        $this->employee->update(['campaign_id' => $palmetto->id]);
+        $review->unsetRelation('employee');
+        $this->assertSame(4200, $service->allowanceSeconds($review, 21600));
+
+        foreach ([63566, 63567, 63565] as $memberId) {
+            $this->employee->update(['trackabi_member_id' => $memberId]);
+            $review->unsetRelation('employee');
+            $this->assertSame(5400, $service->allowanceSeconds($review, 21600));
+        }
+
+        $autoFinance = Campaign::query()->create(['name' => 'AUTO FINANCE CENTER']);
+        $this->employee->update(['campaign_id' => $autoFinance->id, 'trackabi_member_id' => null]);
+        $review->unsetRelation('employee');
+        $this->assertSame(5400, $service->allowanceSeconds($review, 21600));
+        $this->assertSame(1800, $service->allowanceSeconds($review, 27000));
+        $this->assertSame(0, $service->allowanceSeconds($review, 32400));
+        $this->assertSame(0, $service->allowanceSeconds($review, 0));
+    }
+
+    public function test_policy_change_updates_pending_day_but_preserves_applied_review_basis(): void
+    {
+        config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
+            'trackabi_direct.insights_paid_break_minutes' => 15]);
+        $appliedReview = $this->review();
+        $service = app(TrackabiInsightsCsvImportService::class);
+        $original = $this->csv("\"Aguilar, Dereck\",08:00,08:00,05:30,00:30\n");
+        $service->import($this->period, Carbon::parse('2026-10-09'), $original);
+        $pendingReview = DailyTimeReview::query()->where('payroll_period_id', $this->period->id)
+            ->where('employee_id', $this->employee->id)->whereDate('date', '2026-10-08')->firstOrFail();
+        $pendingCsv = $this->csv("\"Aguilar, Dereck\",08:01,08:01,05:30,00:30\n", 'pending-policy-day.csv');
+        $service->import($this->period, Carbon::parse('2026-10-08'), $pendingCsv);
+        $appliedReview->update(['status' => 'revisado_supervisor', 'justified_absence_seconds' => 1200,
+            'supervisor_comment' => 'Justificación revisada']);
+        app(PayrollCalculationService::class)->recalculateEmployeePreservingManual($this->period, $this->employee);
+        $appliedBefore = $appliedReview->fresh();
+        $pendingBefore = $pendingReview->fresh();
+
+        config(['trackabi_direct.insights_paid_time_policies' => [
+            'RRD FINANCIAL' => ['lunch_minutes' => 60, 'break_minutes' => 20],
+        ]]);
+        app(PayrollCalculationService::class)->recalculateEmployeePreservingManual($this->period, $this->employee);
+
+        $appliedAfter = $appliedReview->fresh();
+        $pendingAfter = $pendingReview->fresh();
+        $this->assertSame((int) $appliedBefore->paid_time_not_tracked_seconds,
+            (int) $appliedAfter->paid_time_not_tracked_seconds);
+        $this->assertSame((int) $appliedBefore->payable_seconds, (int) $appliedAfter->payable_seconds);
+        $this->assertSame((int) $appliedBefore->justified_absence_seconds,
+            (int) $appliedAfter->justified_absence_seconds);
+        $this->assertSame($appliedBefore->supervisor_comment, $appliedAfter->supervisor_comment);
+        $this->assertSame(4800, (int) $pendingAfter->paid_time_not_tracked_seconds);
+        $this->assertSame((int) $pendingBefore->payable_seconds + 300,
+            (int) $pendingAfter->payable_seconds);
+    }
+
+    public function test_paid_time_policy_preview_reports_changes_without_writing_reviews(): void
+    {
+        config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
+            'trackabi_direct.insights_paid_break_minutes' => 15]);
+        $review = $this->review();
+        $path = $this->csv("\"Aguilar, Dereck\",08:00,08:00,05:30,00:30\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
+        $before = $review->fresh()->getAttributes();
+
+        config(['trackabi_direct.insights_paid_time_policies' => [
+            'RRD FINANCIAL' => ['lunch_minutes' => 60, 'break_minutes' => 20],
+        ]]);
+        $this->artisan('trackabi:preview-paid-time', ['--period' => $this->period->id])
+            ->expectsOutputToContain('Días pendientes que cambiarían: 1')
+            ->assertSuccessful();
+
+        $this->assertSame($before, $review->fresh()->getAttributes());
+    }
+
+    public function test_paid_time_policy_apply_prorates_existing_justification_and_is_idempotent(): void
+    {
+        config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
+            'trackabi_direct.insights_paid_break_minutes' => 15]);
+        $review = $this->review();
+        $path = $this->csv("\"Aguilar, Dereck\",08:00,08:00,05:30,00:30\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
+        $review->update(['status' => 'revisado_supervisor', 'justified_absence_seconds' => 1200,
+            'unjustified_absence_seconds' => 1500, 'supervisor_comment' => 'Justificado por supervisor']);
+        app(PayrollCalculationService::class)->recalculateEmployeePreservingManual($this->period, $this->employee);
+        $before = $review->fresh();
+
+        config(['trackabi_direct.insights_paid_time_policies' => [
+            'RRD FINANCIAL' => ['lunch_minutes' => 60, 'break_minutes' => 20],
+        ]]);
+        $this->artisan('trackabi:preview-paid-time', ['--period' => $this->period->id, '--apply' => true])
+            ->expectsOutputToContain('Revisiones aplicadas ajustadas proporcionalmente: 1')
+            ->assertSuccessful();
+
+        $after = $review->fresh();
+        $this->assertSame(4800, (int) $after->paid_time_not_tracked_seconds);
+        $this->assertSame(2400, (int) $after->estimated_lost_seconds);
+        $this->assertSame(1067, (int) $after->justified_absence_seconds);
+        $this->assertSame(1333, (int) $after->unjustified_absence_seconds);
+        $this->assertSame((int) $before->payable_seconds + 167, (int) $after->payable_seconds);
+        $this->assertSame($before->status, $after->status);
+        $this->assertSame($before->supervisor_comment, $after->supervisor_comment);
+        $this->assertSame((int) $before->trackabiActivity->measured_activity_seconds,
+            (int) $after->trackabiActivity->measured_activity_seconds);
+        $this->assertSame(4500, (int) $after->lost_time_estimate_metadata['paid_time_policy_adjustment']['previous_allowance_seconds']);
+
+        $attributes = $after->getAttributes();
+        $this->artisan('trackabi:preview-paid-time', ['--period' => $this->period->id, '--apply' => true])
+            ->expectsOutputToContain('Revisiones aplicadas ajustadas proporcionalmente: 0')
+            ->assertSuccessful();
+        $this->assertSame($attributes, $review->fresh()->getAttributes());
+    }
+
+    public function test_paid_time_policy_apply_keeps_fully_justified_day_fully_paid(): void
+    {
+        config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
+            'trackabi_direct.insights_paid_break_minutes' => 15]);
+        $review = $this->review();
+        $path = $this->csv("\"Aguilar, Dereck\",08:00,08:00,05:30,00:30\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
+        $review->update(['status' => 'revisado_supervisor', 'justified_absence_seconds' => 2700,
+            'unjustified_absence_seconds' => 0]);
+        config(['trackabi_direct.insights_paid_time_policies' => [
+            'RRD FINANCIAL' => ['lunch_minutes' => 60, 'break_minutes' => 20],
+        ]]);
+
+        $this->artisan('trackabi:preview-paid-time', ['--period' => $this->period->id, '--apply' => true])
+            ->assertSuccessful();
+        $this->assertSame(2400, (int) $review->fresh()->justified_absence_seconds);
+        $this->assertSame(0, (int) $review->fresh()->unjustified_absence_seconds);
+        $this->assertSame(28800, (int) $review->fresh()->payable_seconds);
+    }
+
+    public function test_paid_time_policy_apply_keeps_unjustified_day_unjustified(): void
+    {
+        config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
+            'trackabi_direct.insights_paid_break_minutes' => 15]);
+        $review = $this->review();
+        $path = $this->csv("\"Aguilar, Dereck\",08:00,08:00,05:30,00:30\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
+        $review->update(['status' => 'revisado_supervisor']);
+        config(['trackabi_direct.insights_paid_time_policies' => [
+            'RRD FINANCIAL' => ['lunch_minutes' => 60, 'break_minutes' => 20],
+        ]]);
+
+        $this->artisan('trackabi:preview-paid-time', ['--period' => $this->period->id, '--apply' => true])
+            ->assertSuccessful();
+        $this->assertSame(0, (int) $review->fresh()->justified_absence_seconds);
+        $this->assertSame(2400, (int) $review->fresh()->unjustified_absence_seconds);
+        $this->assertSame(26400, (int) $review->fresh()->payable_seconds);
+    }
+
+    public function test_pending_review_with_manual_justification_keeps_its_basis_during_policy_recalculation(): void
+    {
+        config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
+            'trackabi_direct.insights_paid_break_minutes' => 15]);
+        $review = $this->review();
+        $path = $this->csv("\"Aguilar, Dereck\",08:00,08:00,05:30,00:30\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
+        $review->update(['justified_absence_seconds' => 600, 'unjustified_absence_seconds' => 2100]);
+        $before = $review->fresh();
+
+        config(['trackabi_direct.insights_paid_time_policies' => [
+            'RRD FINANCIAL' => ['lunch_minutes' => 60, 'break_minutes' => 20],
+        ]]);
+        app(PayrollCalculationService::class)->recalculateEmployeePreservingManual($this->period, $this->employee);
+
+        $after = $review->fresh();
+        $this->assertSame((int) $before->paid_time_not_tracked_seconds, (int) $after->paid_time_not_tracked_seconds);
+        $this->assertSame((int) $before->expected_hubstaff_seconds, (int) $after->expected_hubstaff_seconds);
+        $this->assertSame((int) $before->justified_absence_seconds, (int) $after->justified_absence_seconds);
+        $this->assertSame((int) $before->unjustified_absence_seconds, (int) $after->unjustified_absence_seconds);
+    }
+
+    public function test_paid_time_policy_apply_refuses_changed_activity_after_review_without_writing(): void
+    {
+        config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
+            'trackabi_direct.insights_paid_break_minutes' => 15]);
+        $review = $this->review();
+        $path = $this->csv("\"Aguilar, Dereck\",08:00,08:00,05:30,00:30\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
+        $review->update(['status' => 'revisado_supervisor', 'justified_absence_seconds' => 1200,
+            'unjustified_absence_seconds' => 1500]);
+        $review->trackabiActivity->update(['measured_activity_seconds' => 21000]);
+        $before = $review->fresh()->getAttributes();
+
+        config(['trackabi_direct.insights_paid_time_policies' => [
+            'RRD FINANCIAL' => ['lunch_minutes' => 60, 'break_minutes' => 20],
+        ]]);
+        $this->artisan('trackabi:preview-paid-time', ['--period' => $this->period->id, '--apply' => true])
+            ->assertFailed();
+        $this->assertSame($before, $review->fresh()->getAttributes());
     }
 
     public function test_off_worked_requires_confirmed_hours_and_pays_full_extra_day(): void
@@ -311,7 +516,7 @@ class TrackabiInsightsCsvImportTest extends TestCase
             'password' => 'password', 'profile' => 'rrhh', 'active' => true,
         ]);
         $review = $this->review();
-        $original = $this->csv("\"Aguilar, Dereck\",09:00,09:00,07:00,00:22\n");
+        $original = $this->csv("\"Aguilar, Dereck\",09:00,09:00,05:30,00:30\n");
         $importer = app(TrackabiInsightsCsvImportService::class);
         $importer->import($this->period, Carbon::parse('2026-10-09'), $original);
         $this->actingAs($user);
@@ -325,7 +530,7 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $applied = $review->fresh();
         $this->assertSame('revisado_supervisor', $applied->status);
         $this->assertSame(1200, (int) $applied->justified_absence_seconds);
-        $this->assertSame(27720, (int) $applied->payable_seconds);
+        $this->assertSame(27300, (int) $applied->payable_seconds);
 
         $other = DailyTimeReview::query()->where('payroll_period_id', $this->period->id)
             ->where('employee_id', $this->employee->id)->whereDate('date', '2026-10-08')->firstOrFail();
@@ -340,7 +545,7 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $approvedSalary = (float) $payrollBeforeCorrection->worked_salary_amount;
         $approvedLostAmount = (float) $payrollBeforeCorrection->lost_time_amount;
 
-        $corrected = $this->csv("\"Aguilar, Dereck\",09:00,09:00,05:30,00:30\n", 'corrected-after-review.csv');
+        $corrected = $this->csv("\"Aguilar, Dereck\",09:00,09:00,04:30,00:30\n", 'corrected-after-review.csv');
         $importer->import($this->period, Carbon::parse('2026-10-09'), $corrected);
         app(PayrollCalculationService::class)->recalculateEmployeePreservingManual($this->period, $this->employee);
 

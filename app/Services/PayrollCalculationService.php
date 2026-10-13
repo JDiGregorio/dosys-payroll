@@ -1132,6 +1132,9 @@ class PayrollCalculationService
 
     private function applyScheduleExpectation(DailyTimeReview $review, Employee $employee): void
     {
+        $previousExpectedPaidSeconds = (int) $review->expected_paid_seconds;
+        $previousTrackableSeconds = (int) $review->expected_hubstaff_seconds;
+        $previousPaidNonTrackedSeconds = (int) $review->paid_time_not_tracked_seconds;
         $expectation = $this->scheduleExpectationService->forDate($employee, $review->date);
         $ordinarySeconds = (int) $expectation['expected_ordinary_seconds'];
         $preassignedOvertimeSeconds = max((int) $review->preassigned_overtime_seconds, 0);
@@ -1167,10 +1170,18 @@ class PayrollCalculationService
 
         if ($review->payrollPeriod && app(TrackabiActivityCoverageService::class)->applies($review->payrollPeriod)
             && $review->verified_tracked_seconds === null && $review->trackabiActivity) {
-            $measured = (int) $review->trackabiActivity->measured_activity_seconds;
-            $allowance = $this->trackabiPaidActivityService->allowanceSeconds($review, $measured);
-            $review->paid_time_not_tracked_seconds = $allowance;
-            $review->expected_hubstaff_seconds = max($expectedPaidSeconds - $allowance, 0);
+            if (($review->status !== 'pendiente'
+                || (int) $review->supervisor_adjustment_seconds !== 0
+                || (int) $review->justified_absence_seconds !== 0)
+                && $previousExpectedPaidSeconds === $expectedPaidSeconds) {
+                $review->paid_time_not_tracked_seconds = $previousPaidNonTrackedSeconds;
+                $review->expected_hubstaff_seconds = $previousTrackableSeconds;
+            } else {
+                $measured = (int) $review->trackabiActivity->measured_activity_seconds;
+                $allowance = $this->trackabiPaidActivityService->allowanceSeconds($review, $measured);
+                $review->paid_time_not_tracked_seconds = $allowance;
+                $review->expected_hubstaff_seconds = max($expectedPaidSeconds - $allowance, 0);
+            }
         }
 
         app(SeptemberSecondHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
