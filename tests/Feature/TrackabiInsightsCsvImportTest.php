@@ -14,6 +14,7 @@ use App\Models\PayrollPeriod;
 use App\Models\PayrollResult;
 use App\Models\ScheduleType;
 use App\Models\TrackabiDailyActivity;
+use App\Models\TrackabiActivityImportBatch;
 use App\Models\TrackingImportAlert;
 use App\Models\User;
 use App\Services\PayrollCalculationService;
@@ -440,22 +441,32 @@ class TrackabiInsightsCsvImportTest extends TestCase
     public function test_off_worked_requires_confirmed_hours_and_pays_full_extra_day(): void
     {
         $review = $this->review();
-        $review->update(['hubstaff_total_seconds' => 0, 'expected_ordinary_seconds' => 28800,
-            'expected_hubstaff_seconds' => 28800, 'expected_paid_seconds' => 28800]);
+        $path = $this->csv("\"Aguilar, Dereck\",04:00,04:00,03:00,01:00\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
         $this->expectException(ValidationException::class);
         DailyTimeReviewResource::secondsFromHourStates([
-            'off_worked' => true, 'paid_day_off' => true, 'off_worked_verified_hours' => '0:00',
+            'off_worked' => true, 'off_worked_verified_hours' => '0:00',
+        ], $review->fresh());
+    }
+
+    public function test_off_worked_rejects_confirmation_above_measured_activity(): void
+    {
+        $review = $this->review();
+        $path = $this->csv("\"Aguilar, Dereck\",04:00,04:00,03:00,01:00\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
+        $this->expectException(ValidationException::class);
+        DailyTimeReviewResource::secondsFromHourStates([
+            'off_worked' => true, 'off_worked_verified_hours' => '5:00',
         ], $review->fresh());
     }
 
     public function test_off_worked_with_partial_confirmed_hours_still_pays_full_extra_day(): void
     {
         $review = $this->review();
-        $review->update(['hubstaff_total_seconds' => 0, 'expected_ordinary_seconds' => 28800,
-            'expected_hubstaff_seconds' => 28800, 'expected_paid_seconds' => 28800]);
+        $path = $this->csv("\"Aguilar, Dereck\",04:00,04:00,03:00,01:00\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
         $data = DailyTimeReviewResource::secondsFromHourStates([
             'off_worked' => true, 'off_worked_verified_hours' => '4:00',
-            'absence_justified' => false,
         ], $review->fresh());
         $this->assertTrue($data['paid_day_off']);
         $this->assertSame(14400, $data['off_worked_verified_seconds']);
@@ -465,7 +476,7 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $result = PayrollResult::query()->where('payroll_period_id', $this->period->id)->firstOrFail();
         $this->assertSame(28800, (int) $review->fresh()->payable_seconds);
         $this->assertEqualsWithDelta((float) $result->daily_rate, (float) $result->off_worked_extra_amount, 0.01);
-        $this->assertSame(0, (int) $review->fresh()->hubstaff_total_seconds);
+        $this->assertSame(14400, (int) $review->fresh()->trackabiActivity->measured_activity_seconds);
     }
 
     public function test_direct_review_form_shows_compact_fields_and_calculation_tab(): void
@@ -564,7 +575,7 @@ class TrackabiInsightsCsvImportTest extends TestCase
         ]);
     }
 
-    public function test_direct_no_record_off_worked_form_requires_hours_then_pays_double_day(): void
+    public function test_direct_off_worked_option_only_appears_with_activity_and_pays_double_day(): void
     {
         $user = User::query()->create([
             'name' => 'RRHH', 'email' => 'rrhh-off-worked@example.com',
@@ -575,11 +586,20 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $this->actingAs($user);
 
         Livewire::test(EditDailyTimeReview::class, ['record' => $review->id])
-            ->set('data.off_worked', true)
-            ->call('save')
-            ->assertHasErrors(['off_worked_verified_hours']);
+            ->assertDontSee('Día OFF trabajado');
 
         Livewire::test(EditDailyTimeReview::class, ['record' => $review->id])
+            ->set('data.off_worked', true)
+            ->set('data.off_worked_verified_hours', '4:00')
+            ->call('save')
+            ->assertHasNoErrors();
+
+        $this->assertFalse((bool) $review->fresh()->off_worked);
+        $path = $this->csv("\"Aguilar, Dereck\",04:00,04:00,03:00,01:00\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
+
+        Livewire::test(EditDailyTimeReview::class, ['record' => $review->id])
+            ->assertSee('Día OFF trabajado')
             ->set('data.off_worked', true)
             ->set('data.off_worked_verified_hours', '4:00')
             ->call('save')
@@ -591,6 +611,15 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $this->assertEqualsWithDelta((float) $result->daily_rate, (float) $result->off_worked_extra_amount, 0.01);
     }
 
+    public function test_off_worked_cannot_be_set_without_insights_activity_even_when_timer_exists(): void
+    {
+        $review = $this->review();
+        $this->expectException(ValidationException::class);
+        DailyTimeReviewResource::secondsFromHourStates([
+            'off_worked' => true, 'off_worked_verified_hours' => '4:00',
+        ], $review);
+    }
+
     public function test_rotating_unscheduled_off_worked_never_pays_more_than_double_day(): void
     {
         $schedule = ScheduleType::query()->create(['name' => 'Rotativa', 'code' => 'rotativa', 'active' => true]);
@@ -599,6 +628,17 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $review = $this->review(0);
         $review->update(['hubstaff_total_seconds' => 0, 'scheduled_work_day' => false,
             'paid_day_off' => true, 'off_worked' => true, 'off_worked_verified_seconds' => 14400]);
+        $batch = TrackabiActivityImportBatch::query()->create([
+            'payroll_period_id' => $this->period->id, 'activity_date' => '2026-10-09',
+            'filename' => 'rotating.csv', 'file_hash' => str_repeat('a', 64),
+            'rows' => 1, 'matched' => 1, 'unmatched' => 0, 'imported_at' => now(),
+        ]);
+        TrackabiDailyActivity::query()->create([
+            'employee_id' => $this->employee->id, 'payroll_period_id' => $this->period->id,
+            'import_batch_id' => $batch->id, 'activity_date' => '2026-10-09',
+            'productive_activity_seconds' => 14400, 'unproductive_activity_seconds' => 0,
+            'measured_activity_seconds' => 14400, 'imported_at' => now(),
+        ]);
 
         app(PayrollCalculationService::class)->recalculateEmployeePayrollResult($this->period, $this->employee);
         $scheduled = PayrollResult::query()->where('payroll_period_id', $this->period->id)->firstOrFail();

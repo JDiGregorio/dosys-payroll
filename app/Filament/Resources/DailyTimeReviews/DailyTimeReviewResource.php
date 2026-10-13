@@ -131,12 +131,12 @@ class DailyTimeReviewResource extends Resource
                                 ->afterStateHydrated(fn (Toggle $component, ?DailyTimeReview $record) => $component->state($record ? self::isFullyJustifiedAbsence($record) : false)),
                             Toggle::make('off_worked')->label('Día OFF trabajado')->live()
                                 ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
-                                ->visible(fn (?DailyTimeReview $record): bool => ! self::hasHubstaffTime($record)),
+                                ->visible(fn (?DailyTimeReview $record): bool => self::canMarkOffWorked($record)),
                             TextInput::make('off_worked_verified_hours')->label('Horas trabajadas confirmadas (HH:MM)')
                                 ->helperText('Se requiere confirmación de horas para pagar el día OFF trabajado.')
                                 ->rules(['regex:/^\d{1,3}:[0-5]\d$/'])
                                 ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))
-                                ->visible(fn (?DailyTimeReview $record): bool => ! self::hasHubstaffTime($record))
+                                ->visible(fn (?DailyTimeReview $record): bool => self::canMarkOffWorked($record))
                                 ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) $record?->off_worked_verified_seconds))),
                             Textarea::make('supervisor_comment')->label('Comentario supervisor')
                                 ->disabled(fn (?DailyTimeReview $record): bool => self::isClosedPeriod($record))->columnSpanFull(),
@@ -391,6 +391,23 @@ class DailyTimeReviewResource extends Resource
             }
         }
 
+        $isOffWorked = self::isDirectReview($record) && (bool) ($data['off_worked'] ?? false);
+        if ($isOffWorked) {
+            if (! self::canMarkOffWorked($record)) {
+                throw ValidationException::withMessages([
+                    'off_worked' => 'Día OFF trabajado requiere actividad Trackabi registrada para esta fecha.',
+                ]);
+            }
+            $verified = $parser->parseToSeconds($data['off_worked_verified_hours'] ?? 0);
+            $measured = (int) $record->trackabiActivity->measured_activity_seconds;
+            if ((bool) ($data['absence_justified'] ?? false) || $verified <= 0
+                || $verified > $record->offWorkedRequiredSeconds() || $verified > $measured) {
+                throw ValidationException::withMessages([
+                    'off_worked_verified_hours' => 'Confirma horas mayores que cero y no superiores a la actividad registrada ni a la jornada diaria.',
+                ]);
+            }
+        }
+
         if (self::hasHubstaffTime($record)) {
             if ($record->lost_time_source && array_key_exists('supervisor_lost_hours', $data)) {
                 $proposed = $parser->parseToSeconds($data['supervisor_lost_hours']);
@@ -408,27 +425,16 @@ class DailyTimeReviewResource extends Resource
                 ? $lostTimeSeconds
                 : min($requestedJustifiedSeconds, $lostTimeSeconds);
 
-            $data['paid_day_off'] = false;
-            $data['off_worked'] = false;
-            $data['off_worked_verified_seconds'] = null;
-            $data['justified_absence_seconds'] = $justifiedSeconds;
-            $data['unjustified_absence_seconds'] = max($lostTimeSeconds - $justifiedSeconds, 0);
+            $data['paid_day_off'] = $isOffWorked;
+            $data['off_worked'] = $isOffWorked;
+            $data['off_worked_verified_seconds'] = $isOffWorked ? $verified : null;
+            $data['justified_absence_seconds'] = $isOffWorked ? 0 : $justifiedSeconds;
+            $data['unjustified_absence_seconds'] = $isOffWorked ? 0 : max($lostTimeSeconds - $justifiedSeconds, 0);
         } else {
             $isOff = (bool) ($data['paid_day_off'] ?? false);
             $isJustifiedAbsence = (bool) ($data['absence_justified'] ?? false);
-            $isOffWorked = self::isDirectReview($record) && (bool) ($data['off_worked'] ?? false);
-            $verified = $parser->parseToSeconds($data['off_worked_verified_hours'] ?? 0);
-            if ($isOffWorked) {
-                if ($isJustifiedAbsence || $verified <= 0 || $verified > $record->offWorkedRequiredSeconds()) {
-                    throw ValidationException::withMessages([
-                        'off_worked_verified_hours' => 'Confirma horas trabajadas mayores que cero y hasta la jornada diaria; el día no puede ser también una ausencia justificada.',
-                    ]);
-                }
-                $isOff = true;
-                $data['paid_day_off'] = true;
-            }
-            $data['off_worked'] = $isOffWorked;
-            $data['off_worked_verified_seconds'] = $isOffWorked ? $verified : null;
+            $data['off_worked'] = false;
+            $data['off_worked_verified_seconds'] = null;
 
             $reviewSeconds = $record->untrackedDayReviewSeconds();
             $data['justified_absence_seconds'] = $isOff ? 0 : ($isJustifiedAbsence ? $reviewSeconds : 0);
@@ -449,6 +455,13 @@ class DailyTimeReviewResource extends Resource
     {
         return (int) ($record?->hubstaff_total_seconds ?? 0) > 0
             || (int) ($record?->trackabiActivity?->measured_activity_seconds ?? 0) > 0;
+    }
+
+    private static function canMarkOffWorked(?DailyTimeReview $record): bool
+    {
+        return self::isDirectReview($record)
+            && (int) ($record?->trackabiActivity?->measured_activity_seconds ?? 0) > 0
+            && $record->offWorkedRequiredSeconds() > 0;
     }
 
     private static function isDirectReview(?DailyTimeReview $record): bool

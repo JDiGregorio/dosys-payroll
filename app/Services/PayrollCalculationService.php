@@ -657,8 +657,9 @@ class PayrollCalculationService
 
         return $review->off_worked && $review->paid_day_off && $review->payrollPeriod
             && app(TrackabiActivityCoverageService::class)->applies($review->payrollPeriod)
-            && ! $review->hasTrackabiTimer() && (int) ($review->trackabiActivity?->measured_activity_seconds ?? 0) === 0
+            && (int) ($review->trackabiActivity?->measured_activity_seconds ?? 0) > 0
             && $required > 0 && $verified > 0 && $verified <= $required
+            && $verified <= (int) $review->trackabiActivity->measured_activity_seconds
             ? $verified : 0;
     }
 
