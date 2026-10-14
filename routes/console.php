@@ -8,6 +8,7 @@ use App\Services\EmployeeScheduleTransitionService;
 use App\Services\EmployeeTrainingHoursAdjustmentService;
 use App\Services\JulySecondHalfPayrollCorrectionsService;
 use App\Services\PalmettoDebtCollectionsScheduleCorrectionService;
+use App\Services\OctoberFirstHalfTimeCorrectionService;
 use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
 use App\Services\SeptemberFirstHalfPayrollCorrectionsService;
@@ -26,6 +27,25 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 
 require __DIR__.'/trackabi-direct.php';
+
+Artisan::command('payroll:correct-october-first-half {--period=10} {--apply : Guarda las correcciones y recalcula solo los empleados afectados}', function (OctoberFirstHalfTimeCorrectionService $correction, TimeParserService $parser): int {
+    $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
+    $rows = $correction->preview($period);
+    $this->table(['Empleado', 'Fecha', 'Accion', 'Timer original', 'Verificado', 'Estado'], $rows->map(fn (array $row): array => [
+        $row['employee'], $row['date'], $row['action'],
+        $parser->secondsToHourMinute($row['raw_seconds']),
+        $row['verified_seconds'] === null ? 'OFF' : $parser->secondsToHourMinute($row['verified_seconds']),
+        $row['status'],
+    ])->all());
+    if (! $this->option('apply')) {
+        $this->info('Vista previa: no se modificaron datos.');
+
+        return self::SUCCESS;
+    }
+    $this->info('Correcciones aplicadas: '.$correction->apply($period));
+
+    return self::SUCCESS;
+})->purpose('Corrige OFF, Elalf y OT de Marco solo en el periodo 10.');
 
 Artisan::command('payroll:correct-september-second-half-tracking {--period=9} {--apply : Aplica horas verificadas y recalcula a Elalf y Marco}', function (SeptemberSecondHalfTimeCorrectionService $correction, TimeParserService $parser): int {
     $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));

@@ -761,6 +761,11 @@ class PayrollCalculationService
         if ($review->payrollPeriod?->limit_payable_to_schedule) {
             return false;
         }
+        if ($review->employee && $review->payrollPeriod
+            && app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee)
+            && $review->date->isWeekend()) {
+            return false;
+        }
         if (
             (int) $review->expected_ordinary_seconds > 0
             || (int) $review->hubstaff_total_seconds <= 0
@@ -840,7 +845,8 @@ class PayrollCalculationService
 
         $reviews->each(fn (DailyTimeReview $review) => $this->applyScheduleExpectation($review, $employee));
 
-        if (app(SeptemberSecondHalfTimeCorrectionService::class)->isMarcoPeriod($period, $employee)) {
+        if (app(SeptemberSecondHalfTimeCorrectionService::class)->isMarcoPeriod($period, $employee)
+            || app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($period, $employee)) {
             $this->redistributeMarcoWeekendOvertime($period, $employee, $reviews);
 
             return;
@@ -901,6 +907,7 @@ class PayrollCalculationService
                 &$periodRemainingSeconds,
                 $hasPeriodLimit,
                 $direct,
+                $period,
             ): void {
                 $remainingSeconds = max(
                     $weeklyAssignedSeconds - (int) $assignedOutsidePeriod->get($weekKey, 0),
@@ -911,7 +918,11 @@ class PayrollCalculationService
                     $remainingSeconds = min($remainingSeconds, $periodRemainingSeconds);
                 }
 
-                $orderedReviews = $weekReviews->sort(function (DailyTimeReview $left, DailyTimeReview $right) use ($direct): int {
+                $prioritizeElalfSaturday = app(OctoberFirstHalfTimeCorrectionService::class)->isElalfPeriod($period, $employee);
+                $orderedReviews = $weekReviews->sort(function (DailyTimeReview $left, DailyTimeReview $right) use ($direct, $prioritizeElalfSaturday): int {
+                    if ($prioritizeElalfSaturday && $left->date->isSaturday() !== $right->date->isSaturday()) {
+                        return $left->date->isSaturday() ? -1 : 1;
+                    }
                     $confirmationComparison = (int) $right->assigned_overtime_fulfilled
                         <=> (int) $left->assigned_overtime_fulfilled;
 
@@ -1186,6 +1197,7 @@ class PayrollCalculationService
         }
 
         app(SeptemberSecondHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
+        app(OctoberFirstHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
     }
 
     private function isRotatingSchedule(Employee $employee): bool

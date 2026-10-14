@@ -9,7 +9,7 @@ class TrackabiPaidActivityService
 {
     public function creditedMeasuredSeconds(DailyTimeReview $review): ?int
     {
-        $measured = $review->trackabiActivity?->measured_activity_seconds;
+        $measured = $review->verified_tracked_seconds ?? $review->trackabiActivity?->measured_activity_seconds;
         if ($measured === null) {
             return null;
         }
