@@ -28,8 +28,23 @@ use Illuminate\Support\Facades\DB;
 
 require __DIR__.'/trackabi-direct.php';
 
-Artisan::command('payroll:correct-october-first-half {--period=10} {--apply : Guarda las correcciones y recalcula solo los empleados afectados}', function (OctoberFirstHalfTimeCorrectionService $correction, TimeParserService $parser): int {
+Artisan::command('payroll:correct-october-first-half {--period=10} {--apply : Guarda las correcciones y recalcula solo los empleados afectados} {--refresh-marco-days : Actualiza únicamente el conteo de días de Marco sin cambiar importes}', function (OctoberFirstHalfTimeCorrectionService $correction, TimeParserService $parser): int {
     $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
+    if ($this->option('refresh-marco-days')) {
+        $before = \App\Models\PayrollResult::query()->where('payroll_period_id', $period->id)
+            ->whereHas('employee', fn ($query) => $query->where('name', 'Marco Antonio Lara'))
+            ->value('worked_days');
+        $this->line('Marco: días actuales '.($before ?? 'N/D').'; objetivo 15.00. No se modificarán importes.');
+        if (! $this->option('apply')) {
+            $this->info('Vista previa: no se modificaron datos.');
+
+            return self::SUCCESS;
+        }
+        $result = $correction->refreshMarcoWorkedDays($period);
+        $this->info("Días de Marco actualizados: {$result['before']} -> {$result['after']}.");
+
+        return self::SUCCESS;
+    }
     $rows = $correction->preview($period);
     $this->table(['Empleado', 'Fecha', 'Accion', 'Timer original', 'Verificado', 'Estado'], $rows->map(fn (array $row): array => [
         $row['employee'], $row['date'], $row['action'],

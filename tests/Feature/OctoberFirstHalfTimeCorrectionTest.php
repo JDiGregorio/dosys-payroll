@@ -109,6 +109,15 @@ class OctoberFirstHalfTimeCorrectionTest extends TestCase
         $this->assertNotNull(PayrollResult::where('payroll_period_id', $period->id)
             ->where('employee_id', $employees['Marco Antonio Lara']->id)->first());
 
+        $result = PayrollResult::where('payroll_period_id', $period->id)
+            ->where('employee_id', $employees['Marco Antonio Lara']->id)->sole();
+        $this->assertSame('15.00', (string) $result->worked_days);
+        $amounts = $result->only(['worked_salary_amount', 'overtime_amount', 'gross_amount', 'net_amount']);
+        $result->update(['worked_days' => 12]);
+        $this->assertSame(['before' => '12.00', 'after' => '15.00'], $correction->refreshMarcoWorkedDays($period));
+        $this->assertSame($amounts, $result->fresh()->only(array_keys($amounts)));
+        $this->assertSame(['before' => '15.00', 'after' => '15.00'], $correction->refreshMarcoWorkedDays($period));
+
         $marco->refresh()->update(['justified_absence_seconds' => 300]);
         $payroll->recalculateEmployeePreservingManual($period, $employees['Marco Antonio Lara']);
         $this->assertSame(300, $this->review($period, $employees['Marco Antonio Lara'], '2026-09-29')->justified_absence_seconds);

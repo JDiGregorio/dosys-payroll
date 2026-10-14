@@ -6,6 +6,7 @@ use App\Models\DailyTimeReview;
 use App\Models\Employee;
 use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
+use App\Models\PayrollResult;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -167,6 +168,31 @@ class OctoberFirstHalfTimeCorrectionService
             }
 
             return $changed;
+        });
+    }
+
+    /** @return array{before: string, after: string} */
+    public function refreshMarcoWorkedDays(PayrollPeriod $period): array
+    {
+        return DB::transaction(function () use ($period): array {
+            $locked = PayrollPeriod::query()->lockForUpdate()->findOrFail($period->id);
+            $this->assertOpen($locked);
+            $marco = Employee::query()->where('name', self::MARCO)->sole();
+            $result = PayrollResult::query()->where('payroll_period_id', $locked->id)
+                ->where('employee_id', $marco->id)->lockForUpdate()->sole();
+            $before = $result->getAttributes();
+
+            app(PayrollCalculationService::class)->recalculateEmployeePayrollResult($locked, $marco);
+
+            $after = $result->fresh()->getAttributes();
+            $beforeDays = (string) $before['worked_days'];
+            $afterDays = (string) $after['worked_days'];
+            unset($before['worked_days'], $before['updated_at'], $after['worked_days'], $after['updated_at']);
+            if ($before !== $after || round((float) $afterDays, 2) !== 15.0) {
+                throw new RuntimeException('El conteo no llegó a 15 días o el recálculo cambiaría otros datos de Marco. No se guardó ningún cambio.');
+            }
+
+            return ['before' => $beforeDays, 'after' => $afterDays];
         });
     }
 

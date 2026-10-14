@@ -817,6 +817,11 @@ class PayrollCalculationService
     {
         return (float) $reviews->sum(function (DailyTimeReview $review): float {
             if ($review->expected_ordinary_seconds <= 0) {
+                if ($review->employee && $review->payrollPeriod
+                    && app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee)
+                    && (int) $review->possible_overtime_seconds > 0) {
+                    return 1.0;
+                }
                 if (($review->paid_day_off || $this->isFullyJustifiedAbsence($review))
                     && $this->isRotatingSchedule($review->employee)) {
                     return 1.0;
