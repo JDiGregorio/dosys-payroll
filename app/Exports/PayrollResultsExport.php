@@ -6,6 +6,7 @@ use App\Models\PayrollBonus;
 use App\Models\PayrollDeduction;
 use App\Models\PayrollPeriod;
 use App\Models\PayrollResult;
+use App\Services\PayrollVoucherBonusPresenter;
 use Illuminate\Support\Collection;
 use Maatwebsite\Excel\Concerns\FromQuery;
 use Maatwebsite\Excel\Concerns\ShouldAutoSize;
@@ -39,6 +40,8 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
     private ?Collection $deductionTypes = null;
 
     private ?Collection $deductionsByEmployee = null;
+
+    private ?bool $hasClassifiedExtraBonuses = null;
 
     public function __construct(private PayrollPeriod $period) {}
 
@@ -75,6 +78,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
             'Días pagables (equiv.)',
             'Salario',
             'Bonos extras',
+            ...($this->hasClassifiedExtraBonuses() ? ['Bono Extra Cliente', 'Otros bonos (detalle)'] : []),
             'Horas extras',
         ];
 
@@ -116,6 +120,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
             $row->displayWorkedDays(),
             $row->worked_salary_amount,
             $row->extra_bonuses_amount,
+            ...($this->hasClassifiedExtraBonuses() ? $this->extraBonusValues($row) : []),
             $row->overtime_amount,
         ];
 
@@ -150,7 +155,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
             ->where('payroll_period_id', $this->period->id)
             ->where('status', '!=', 'rechazado')
             ->where('amount', '>', 0)
-            ->whereNotIn('type', ['manual', 'other'])
+            ->whereNotIn('type', ['manual', 'other', 'client_extra'])
             ->pluck('type')
             ->map(fn (string $type): string => $type === 'adjustment' ? 'tier_adjustment' : $type)
             ->unique();
@@ -165,6 +170,34 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
         return $this->bonusTypes = collect(array_keys(self::BONUS_LABELS))
             ->filter(fn (string $type): bool => $typesInPeriod->contains($type))
             ->values();
+    }
+
+    private function hasClassifiedExtraBonuses(): bool
+    {
+        if ($this->period->starts_at->toDateString() < '2026-09-26') {
+            return false;
+        }
+
+        return $this->hasClassifiedExtraBonuses ??= PayrollBonus::query()
+            ->where('payroll_period_id', $this->period->id)
+            ->whereIn('type', ['client_extra', 'other'])
+            ->exists();
+    }
+
+    private function extraBonusValues(PayrollResult $row): array
+    {
+        $rows = app(PayrollVoucherBonusPresenter::class)->extraBonusRows($row);
+        $client = 0.0;
+        $other = [];
+        foreach ($rows as [$label, $amount]) {
+            if (in_array($label, ['Bono Extra Cliente', 'Bonos extra cliente'], true)) {
+                $client += $amount;
+            } else {
+                $other[] = $label.': L '.number_format($amount, 2);
+            }
+        }
+
+        return [$client, implode(' | ', $other)];
     }
 
     private function deductionTypes(): Collection

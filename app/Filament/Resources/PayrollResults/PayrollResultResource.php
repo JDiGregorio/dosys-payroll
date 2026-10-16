@@ -8,6 +8,7 @@ use App\Filament\Resources\PayrollResults\Pages\EditPayrollResult;
 use App\Filament\Resources\PayrollResults\Pages\ListPayrollResults;
 use App\Filament\Resources\PayrollResults\Pages\ViewPayrollResult;
 use App\Models\PayrollResult;
+use App\Services\PayrollVoucherBonusPresenter;
 use App\Services\PayrollVoucherSender;
 use App\Services\TimeParserService;
 use App\Support\TimeTrackingSource;
@@ -137,6 +138,12 @@ class PayrollResultResource extends Resource
                                 )),
                             TextInput::make('lost_time_amount')->label('Impacto del tiempo perdido')->numeric()->readOnly(),
                             TextInput::make('extra_bonuses_amount')->label('Bonos extras')->numeric(),
+                            Placeholder::make('bonus_breakdown')->label('Detalle de bonos extras')
+                                ->content(fn (?PayrollResult $record): string => $record
+                                    ? collect(app(PayrollVoucherBonusPresenter::class)->extraBonusRows($record))
+                                        ->map(fn (array $row): string => $row[0].': L '.number_format($row[1], 2))
+                                        ->implode(' | ')
+                                    : ''),
                             TextInput::make('off_worked_extra_amount')->label('Adicional OFF trabajado')->numeric()->readOnly(),
                             TextInput::make('preassigned_overtime_hours')->label('Horas extra preasignadas')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToDecimalHours((int) $record->preassigned_overtime_seconds) : 0)),
                             TextInput::make('additional_overtime_hours')->label('Horas extra adicionales')->disabled()->dehydrated(false)->afterStateHydrated(fn (TextInput $component, ?PayrollResult $record) => $component->state($record ? app(TimeParserService::class)->secondsToDecimalHours((int) $record->additional_overtime_seconds) : 0)),
@@ -191,6 +198,11 @@ class PayrollResultResource extends Resource
                     ->alignRight(),
                 TextColumn::make('lost_time_amount')->label('Impacto tiempo perdido')->money('HNL', locale: 'en-US'),
                 TextColumn::make('extra_bonuses_amount')->label('Bonos extras')->money('HNL', locale: 'en-US'),
+                TextColumn::make('bonus_breakdown')->label('Detalle de bonos')
+                    ->state(fn (PayrollResult $record): string => collect(app(PayrollVoucherBonusPresenter::class)->extraBonusRows($record))
+                        ->map(fn (array $row): string => $row[0].': L '.number_format($row[1], 2))
+                        ->implode(' | '))
+                    ->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('off_worked_extra_amount')->label('Adicional OFF trabajado')->money('HNL', locale: 'en-US')->toggleable(),
                 TextColumn::make('preassigned_overtime_seconds')->label('Extra preasignada')->state(fn (PayrollResult $record) => app(TimeParserService::class)->secondsToDecimalHours((int) $record->preassigned_overtime_seconds))->toggleable(),
                 TextColumn::make('additional_overtime_seconds')->label('Extra adicional')->state(fn (PayrollResult $record) => app(TimeParserService::class)->secondsToDecimalHours((int) $record->additional_overtime_seconds))->toggleable(),

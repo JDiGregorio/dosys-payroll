@@ -13,10 +13,39 @@ class PayrollVoucherBonusPresenter
         $period = $result->payrollPeriod;
         $employee = $result->employee;
 
-        if (! $period || ! $employee
-            || $period->starts_at->toDateString() !== '2026-09-11'
-            || $period->ends_at->toDateString() !== '2026-09-25') {
+        if (! $period || ! $employee) {
             return $defaultRows;
+        }
+
+        if ($period->starts_at->toDateString() !== '2026-09-11'
+            || $period->ends_at->toDateString() !== '2026-09-25') {
+            $amounts = [];
+            foreach (app(BonusApplicationService::class)->approvedBonusesForEmployee($period, $employee) as $bonus) {
+                $label = match ($bonus->type) {
+                    'client_extra' => 'Bono Extra Cliente',
+                    'other' => trim((string) $bonus->description) ?: 'Otro bono',
+                    'manual' => trim((string) $bonus->description) ?: 'Bono manual',
+                    default => null,
+                };
+                if ($label !== null) {
+                    $amounts[$label] = ($amounts[$label] ?? 0) + (int) round((float) $bonus->amount * 100);
+                }
+            }
+
+            // A manually edited payroll result may differ from bonus records; never display a false breakdown.
+            if (! $amounts) {
+                return $defaultRows;
+            }
+
+            if (array_sum($amounts) !== $totalCents) {
+                return [['Bonos extras (sin desglose)', (float) ($totalCents / 100), true]];
+            }
+
+            return array_map(
+                fn (string $label, int $cents): array => [$label, (float) ($cents / 100), true],
+                array_keys($amounts),
+                array_values($amounts),
+            );
         }
 
         $lunchCents = 0;

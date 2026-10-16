@@ -9,6 +9,7 @@ use App\Services\EmployeeTrainingHoursAdjustmentService;
 use App\Services\JulySecondHalfPayrollCorrectionsService;
 use App\Services\PalmettoDebtCollectionsScheduleCorrectionService;
 use App\Services\OctoberFirstHalfTimeCorrectionService;
+use App\Services\OctoberFirstHalfBonusClassificationService;
 use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
 use App\Services\SeptemberFirstHalfPayrollCorrectionsService;
@@ -27,6 +28,28 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 
 require __DIR__.'/trackabi-direct.php';
+
+Artisan::command('payroll:classify-october-bonuses {--period=10} {--apply : Reclasifica sin recalcular la planilla}', function (OctoberFirstHalfBonusClassificationService $service): int {
+    $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
+    $rows = $service->preview($period);
+    $this->table(['ID', 'Tipo actual', 'Tipo nuevo', 'Descripcion actual', 'Monto', 'Valido'], array_map(fn (array $row): array => [
+        $row['id'], $row['from'], $row['to'], $row['description'], $row['amount'], $row['valid'] ? 'Si' : 'NO',
+    ], $rows));
+    $this->line('Bonos: '.count($rows).'. No se modifican montos ni resultados de planilla.');
+    if (! $this->option('apply')) {
+        $this->info('Vista previa: no se modificaron datos.');
+
+        return self::SUCCESS;
+    }
+    if (in_array(false, array_column($rows, 'valid'), true)) {
+        $this->error('Hay bonos manuales inesperados. No se modificaron datos.');
+
+        return self::FAILURE;
+    }
+    $this->info('Bonos reclasificados: '.$service->apply($period));
+
+    return self::SUCCESS;
+})->purpose('Reclasifica bonos del periodo 10 sin recalcular ni cambiar importes.');
 
 Artisan::command('payroll:correct-october-first-half {--period=10} {--apply : Guarda las correcciones y recalcula solo los empleados afectados} {--refresh-marco-days : Actualiza únicamente el conteo de días de Marco sin cambiar importes}', function (OctoberFirstHalfTimeCorrectionService $correction, TimeParserService $parser): int {
     $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));

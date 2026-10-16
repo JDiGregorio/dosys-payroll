@@ -117,9 +117,11 @@ class PayrollBonusResource extends Resource
                 ->required(fn ($get) => $get('scope_type') === 'employee'),
             Select::make('team_id')->label('Team')->relationship('team', 'name')->searchable()->preload()->visible(fn ($get) => $get('scope_type') === 'team')->required(fn ($get) => $get('scope_type') === 'team'),
             Select::make('campaign_id')->label('Campaña')->relationship('campaign', 'name')->searchable()->preload()->visible(fn ($get) => $get('scope_type') === 'campaign')->required(fn ($get) => $get('scope_type') === 'campaign'),
-            Select::make('type')->label('Tipo')->options(self::typeOptions())->default('manual')->required(),
+            Select::make('type')->label('Tipo')->options(self::typeOptions())->default('client_extra')->required()->live(),
             TextInput::make('amount')->label('Monto')->numeric()->default(0)->required(),
-            TextInput::make('description')->label('Descripción')->maxLength(255),
+            TextInput::make('description')->label('Descripción')->maxLength(255)
+                ->visible(fn ($get) => $get('type') === 'other')
+                ->required(fn ($get) => $get('type') === 'other'),
             Select::make('status')->label('Estado')->options(self::statusOptions())->default('aprobado')->required()->hidden(),
         ]);
     }
@@ -135,6 +137,7 @@ class PayrollBonusResource extends Resource
                 TextColumn::make('campaign.name')->label('Campaña'),
                 TextColumn::make('type')->label('Tipo')->badge()->formatStateUsing(fn (string $state) => self::typeOptions()[$state] ?? $state),
                 TextColumn::make('amount')->label('Monto')->money('HNL', locale: 'en-US')->sortable(),
+                TextColumn::make('description')->label('Descripción')->toggleable(),
             ])
             ->filters([
                 SelectFilter::make('payroll_period_id')->relationship('payrollPeriod', 'name', modifyQueryUsing: fn (Builder $query) => $query->open())->label('Período'),
@@ -157,7 +160,7 @@ class PayrollBonusResource extends Resource
             'qa' => 'Bono QA',
             'productivity' => 'Bono de Productividad',
             'time_management' => 'Bono TM',
-            'manual' => 'Manual',
+            'client_extra' => 'Bono Extra Cliente',
             'referred' => 'Bono referido',
             'adjustment' => 'Ajuste Cambio de Tier',
             'vacation' => 'Vacaciones',
@@ -177,6 +180,12 @@ class PayrollBonusResource extends Resource
 
     public static function normalizeScopeData(array $data): array
     {
+        if (($data['type'] ?? null) === 'other') {
+            $data['description'] = trim((string) ($data['description'] ?? ''));
+            if ($data['description'] === '') {
+                throw ValidationException::withMessages(['description' => 'Indica la descripción del bono.']);
+            }
+        }
         if (auth()->user()?->isSupervisor()) {
             $data['scope_type'] = 'employee';
             $data['team_id'] = null;

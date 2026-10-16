@@ -179,7 +179,7 @@ class PayrollCalculationService
         $referredBonus = $this->bonusService->amountByType($period, $employee, ['referred']);
         $tierAdjustmentBonus = $this->bonusService->amountByType($period, $employee, ['adjustment', 'tier_adjustment']);
         $vacationBonus = $this->bonusService->amountByType($period, $employee, ['vacation']);
-        $extraBonuses = $this->bonusService->amountByType($period, $employee, ['manual', 'other']);
+        $extraBonuses = $this->bonusService->amountByType($period, $employee, ['manual', 'other', 'client_extra']);
         $internetSubsidy = ($employee->location === 'remote' ? (float) $employee->internet_subsidy_amount : 0.0)
             + $this->bonusService->amountByType($period, $employee, ['internet_subsidy']);
         $payrollCompensation = 0.0;
