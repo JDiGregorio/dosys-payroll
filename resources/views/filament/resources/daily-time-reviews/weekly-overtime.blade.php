@@ -1,6 +1,6 @@
 @php
-    use AppModelsDailyTimeReview;
-    use AppServicesTimeParserService;
+    use App\Models\DailyTimeReview;
+    use App\Services\TimeParserService;
 
     $parser = app(TimeParserService::class);
     $weekStart = $record?->date?->copy()->startOfWeek();

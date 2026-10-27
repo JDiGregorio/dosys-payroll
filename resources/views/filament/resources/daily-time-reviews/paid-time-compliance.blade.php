@@ -1,6 +1,6 @@
 @php
-    use AppServicesTrackabiTrackabiPaidTimeComplianceService;
-    use AppServicesTimeParserService;
+    use App\Services\Trackabi\TrackabiPaidTimeComplianceService;
+    use App\Services\TimeParserService;
 
     $row = $record
         ? collect(app(TrackabiPaidTimeComplianceService::class)->inspect($record->payrollPeriod))
