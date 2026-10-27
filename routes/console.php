@@ -28,6 +28,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 
 require __DIR__.'/trackabi-direct.php';
+require __DIR__.'/client-weekly-hours.php';
 
 Artisan::command('payroll:classify-october-bonuses {--period=10} {--apply : Reclasifica sin recalcular la planilla}', function (OctoberFirstHalfBonusClassificationService $service): int {
     $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
