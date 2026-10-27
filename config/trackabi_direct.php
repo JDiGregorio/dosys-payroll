@@ -11,17 +11,26 @@ return [
     'import_page_size' => (int) env('TRACKABI_DIRECT_IMPORT_PAGE_SIZE', 100),
     'import_max_pages' => (int) env('TRACKABI_DIRECT_IMPORT_MAX_PAGES', 100),
     'max_entry_hours' => (int) env('TRACKABI_DIRECT_MAX_ENTRY_HOURS', 24),
+    'special_projects_from_date' => '2026-10-21',
+    'operations_final_review_from_date' => '2026-10-11',
+    'special_projects' => [
+        81118 => 'paid_break_10',
+        81119 => 'paid_break_15',
+        81120 => 'paid_lunch',
+    ],
+    'insights_ignored_names' => ['Delcid, David', 'Rodas, Rocio', 'GARCIA, JONATHAN'],
+    'direct_ignored_member_ids' => [63936], // David Delcid: no payroll employee.
     'insights_paid_lunch_minutes' => (int) env('TRACKABI_INSIGHTS_PAID_LUNCH_MINUTES', 60),
     'insights_paid_break_minutes' => (int) env('TRACKABI_INSIGHTS_PAID_BREAK_MINUTES', 15),
     'insights_paid_time_policies' => [
-        'RRD FINANCIAL' => ['lunch_minutes' => 60, 'break_minutes' => 20],
-        'AUTO FINANCE CENTER' => ['lunch_minutes' => 60, 'break_minutes' => 30],
-        'PALMETTO' => ['lunch_minutes' => 60, 'break_minutes' => 10],
+        'RRD FINANCIAL' => ['lunch_minutes' => 60, 'break_minutes' => 20, 'break_minutes_per_occurrence' => 10, 'break_occurrences' => 2],
+        'AUTO FINANCE CENTER' => ['lunch_minutes' => 60, 'break_minutes' => 30, 'break_minutes_per_occurrence' => 15, 'break_occurrences' => 2],
+        'PALMETTO' => ['lunch_minutes' => 60, 'break_minutes' => 10, 'break_minutes_per_occurrence' => 10, 'break_occurrences' => 1],
     ],
     'insights_special_paid_time_member_ids' => [
-        63566 => ['lunch_minutes' => 60, 'break_minutes' => 30], // Victor Vasquez
-        63567 => ['lunch_minutes' => 60, 'break_minutes' => 30], // Marco Lara
-        63565 => ['lunch_minutes' => 60, 'break_minutes' => 30], // Kelly Urquia
+        63566 => ['lunch_minutes' => 60, 'break_minutes' => 30, 'break_minutes_per_occurrence' => 15, 'break_occurrences' => 2], // Victor Vasquez
+        63567 => ['lunch_minutes' => 60, 'break_minutes' => 30, 'break_minutes_per_occurrence' => 15, 'break_occurrences' => 2], // Marco Lara
+        63565 => ['lunch_minutes' => 60, 'break_minutes' => 30, 'break_minutes_per_occurrence' => 15, 'break_occurrences' => 2], // Kelly Urquia
     ],
 
     // Reserved for an activity provider with a confirmed response contract.

@@ -20,6 +20,7 @@ class Employee extends Model
             'ordinary_weekly_hours' => 'decimal:2',
             'daily_hours' => 'decimal:2',
             'schedule_cycle_anchor_date' => 'date',
+            'fixed_weekly_off_from_date' => 'date',
             'calendar_days' => 'decimal:2',
             'monthly_salary' => 'decimal:2',
             'semi_monthly_salary' => 'decimal:2',

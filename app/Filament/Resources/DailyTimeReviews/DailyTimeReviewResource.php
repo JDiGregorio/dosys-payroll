@@ -213,6 +213,14 @@ class DailyTimeReviewResource extends Resource
                             View::make('filament.resources.daily-time-reviews.hubstaff-entries')
                                 ->columnSpanFull(),
                         ]),
+                    Tab::make('Pausas pagadas')
+                        ->visible(fn (?DailyTimeReview $record): bool => self::isDirectReview($record)
+                            && $record->date->toDateString() >= (string) config('trackabi_direct.special_projects_from_date'))
+                        ->schema([View::make('filament.resources.daily-time-reviews.paid-time-compliance')->columnSpanFull()]),
+                    Tab::make('OT semanal')
+                        ->visible(fn (?DailyTimeReview $record): bool => self::isDirectReview($record)
+                            && $record?->employee?->overtime_distribution_mode === 'weekly_flexible')
+                        ->schema([View::make('filament.resources.daily-time-reviews.weekly-overtime')->columnSpanFull()]),
                     Tab::make('Detalle de cálculo')
                         ->visible(fn (?DailyTimeReview $record): bool => self::isDirectReview($record))
                         ->columns(2)

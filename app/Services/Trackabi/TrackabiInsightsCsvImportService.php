@@ -7,6 +7,7 @@ use App\Models\Employee;
 use App\Models\PayrollPeriod;
 use App\Models\TrackabiActivityImportBatch;
 use App\Models\TrackabiDailyActivity;
+use App\Models\TrackabiDayExclusion;
 use App\Models\TrackingImportAlert;
 use App\Services\PayrollCalculationService;
 use Carbon\Carbon;
@@ -51,6 +52,8 @@ class TrackabiInsightsCsvImportService
             throw new RuntimeException('Este mismo CSV ya se usó para otra fecha; exporta el reporte del día correcto.');
         }
         $employees = Employee::query()->where('active', true)->get();
+        $excludedEmployeeIds = TrackabiDayExclusion::query()->where('payroll_period_id', $period->id)
+            ->whereDate('date', $date)->pluck('employee_id')->map(fn ($id): int => (int) $id);
         $handle = fopen($path, 'rb');
         if ($handle === false) {
             throw new RuntimeException('No se pudo abrir el CSV.');
@@ -67,6 +70,7 @@ class TrackabiInsightsCsvImportService
             $headers = $this->headerPositions($first);
             $rows = [];
             $unmatched = [];
+            $ignored = [];
             $errors = [];
             $seenEmployees = [];
             $rowNumber = 1;
@@ -117,7 +121,17 @@ class TrackabiInsightsCsvImportService
                     $employees, $memberId ? (int) $memberId : null, $email, $member,
                 );
                 if (! $employee) {
+                    if (in_array($member, config('trackabi_direct.insights_ignored_names', []), true)) {
+                        $ignored[] = ['row' => $rowNumber, 'member' => $member];
+
+                        continue;
+                    }
                     $unmatched[] = ['row' => $rowNumber, 'member' => $member ?: 'Sin nombre'];
+
+                    continue;
+                }
+                if ($excludedEmployeeIds->contains($employee->id)) {
+                    $ignored[] = ['row' => $rowNumber, 'member' => $member, 'reason' => 'excluded_day'];
 
                     continue;
                 }
@@ -169,10 +183,11 @@ class TrackabiInsightsCsvImportService
             'filename' => basename($path),
             'file_hash' => $hash,
             'previous_batch_id' => $previousBatch?->id,
-            'rows_count' => count($rows) + count($unmatched) + count($errors),
+            'rows_count' => count($rows) + count($unmatched) + count($ignored) + count($errors),
             'rows' => $rows,
             'employees_matched' => count($rows),
             'employees_unmatched' => $unmatched,
+            'ignored_rows' => $ignored,
             'errors' => $errors,
             'productive_total_seconds' => array_sum(array_column($rows, 'productive_seconds')),
             'unproductive_total_seconds' => array_sum(array_column($rows, 'unproductive_seconds')),

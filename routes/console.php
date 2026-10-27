@@ -391,6 +391,11 @@ Artisan::command(
                     ], $plan['suspicious_entries']));
             }
             $this->line('Proyectos sin mapeo: '.count($plan['unmapped_projects']).'; empleados sin mapeo: '.count($plan['unmapped_employees']));
+            $this->line("Entradas externas excluidas explícitamente: {$plan['ignored_external_entries']}.");
+            $this->line("Entradas omitidas por exclusión empleado-día: {$plan['excluded_day_entries']}.");
+            foreach ($plan['special_project_coverage'] as $category => $count) {
+                $this->line("Proyecto especial {$category}: {$count} entradas.");
+            }
             $this->line('Activity/Insights: no expuesto por la API pública; no se infiere desde logged time.');
             if (! $this->option('dry-run')) {
                 $this->line("Entradas escritas: {$plan['written']}; empleados recalculados: {$plan['affected_employees']}.");

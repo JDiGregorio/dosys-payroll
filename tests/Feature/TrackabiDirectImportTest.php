@@ -11,6 +11,8 @@ use App\Models\PayrollPeriod;
 use App\Models\PayrollResult;
 use App\Models\ScheduleType;
 use App\Models\TrackabiProjectMapping;
+use App\Models\TrackabiDailyActivity;
+use App\Models\TrackabiDayExclusion;
 use App\Models\TrackingImportAlert;
 use App\Models\User;
 use App\Models\WorkScheduleTemplate;
@@ -19,11 +21,14 @@ use App\Services\Trackabi\TrackabiCoverageReportService;
 use App\Services\PayrollCalculationService;
 use App\Services\ScheduleExpectationService;
 use App\Services\Trackabi\TrackabiDirectTimeEntryValidator;
+use App\Services\Trackabi\TrackabiDayExclusionService;
+use App\Services\Trackabi\TrackabiInsightsCsvImportService;
 use App\Support\TimeTrackingSource;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class TrackabiDirectImportTest extends TestCase
@@ -74,6 +79,71 @@ class TrackabiDirectImportTest extends TestCase
             'project' => ['id' => 75415, 'name' => 'Palmetto A'],
             'time_type' => 'Normal',
         ];
+    }
+
+    public function test_excluded_day_stays_without_active_time_after_both_reimports(): void
+    {
+        $this->period->update(['starts_at' => '2026-10-22', 'ends_at' => '2026-10-22']);
+        $this->employee->update(['trackabi_name' => 'Refsman, Rene']);
+        config(['trackabi_direct.import_page_size' => 20]);
+        Http::fake(fn (Request $request) => Http::response([$this->entry(101, '2026-10-22', '08:00:00')]));
+        $direct = app(TrackabiDirectImportService::class);
+        $direct->import($this->period);
+        Storage::fake('local');
+        Storage::disk('local')->put('day.csv', "Member Name,Total logged,Total billable,Productive activity time,Unproductive activity time\n\"Refsman, Rene\",08:00,08:00,06:45,00:15\n");
+        $path = Storage::disk('local')->path('day.csv');
+        $insights = app(TrackabiInsightsCsvImportService::class);
+        $insights->import($this->period, Carbon::parse('2026-10-22'), $path);
+        $this->assertDatabaseHas('hubstaff_time_entries', ['direct_external_id' => '101', 'active' => true]);
+        $this->assertDatabaseCount('trackabi_daily_activities', 1);
+
+        app(TrackabiDayExclusionService::class)->apply(
+            $this->period, $this->employee, Carbon::parse('2026-10-22'), 'Descanso confirmado',
+        );
+        $this->assertDatabaseHas('hubstaff_time_entries', ['direct_external_id' => '101', 'active' => false]);
+        $this->assertDatabaseCount('trackabi_daily_activities', 0);
+        $this->assertCount(1, TrackabiDayExclusion::query()->sole()->archived_insights);
+        $review = DailyTimeReview::query()->where('payroll_period_id', $this->period->id)->sole();
+        $this->assertSame(0, (int) $review->hubstaff_total_seconds);
+        $this->assertSame(0, (int) $review->payable_seconds);
+        $user = User::query()->create([
+            'name' => 'RRHH', 'email' => 'rrhh-exclusion@example.com',
+            'password' => 'password', 'profile' => 'rrhh', 'active' => true,
+        ]);
+        $this->actingAs($user)->get("/admin/daily-review-calendar?period_id={$this->period->id}&employee_id={$this->employee->id}")
+            ->assertOk()->assertSee('Sin registro');
+
+        $this->assertSame(1, $direct->preview($this->period)['excluded_day_entries']);
+        $direct->import($this->period);
+        $this->assertCount(1, $insights->preview($this->period, Carbon::parse('2026-10-22'), $path)['ignored_rows']);
+        $insights->import($this->period, Carbon::parse('2026-10-22'), $path);
+        $this->assertDatabaseHas('hubstaff_time_entries', ['direct_external_id' => '101', 'active' => false]);
+        $this->assertDatabaseCount('trackabi_daily_activities', 0);
+    }
+
+    public function test_paid_time_projects_are_imported_without_campaign_mapping_or_work_time_credit(): void
+    {
+        $this->period->update(['starts_at' => '2026-10-21', 'ends_at' => '2026-10-21']);
+        config(['trackabi_direct.import_page_size' => 20]);
+        Http::fake(fn (Request $request) => Http::response([
+            $this->entry(101, '2026-10-21', '08:00:00'),
+            [...$this->entry(102, '2026-10-21', '00:10:00'),
+                'project' => ['id' => 81118, 'name' => 'Break 10']],
+            [...$this->entry(103, '2026-10-21', '01:00:00'),
+                'project' => ['id' => 81120, 'name' => 'Lunch']],
+        ]));
+
+        $plan = app(TrackabiDirectImportService::class)->preview($this->period);
+        $this->assertSame([], $plan['unmapped_projects']);
+        $this->assertSame(['paid_break_10' => 1, 'paid_lunch' => 1], $plan['special_project_coverage']);
+        $this->artisan("trackabi:import --period={$this->period->id} --commit")->assertSuccessful();
+        $this->assertDatabaseCount('hubstaff_time_entries', 3);
+        $review = DailyTimeReview::query()->where('employee_id', $this->employee->id)
+            ->whereDate('date', '2026-10-21')->sole();
+        $this->assertSame(8 * 3600, (int) $review->hubstaff_total_seconds);
+        $this->assertDatabaseMissing('tracking_import_alerts', ['code' => 'unmapped_project']);
+        $this->artisan("trackabi:import --period={$this->period->id} --commit")->assertSuccessful();
+        $this->assertDatabaseCount('hubstaff_time_entries', 3);
     }
 
     public function test_logged_time_validation_enforces_24_hour_boundary_without_inference(): void
@@ -352,6 +422,7 @@ class TrackabiDirectImportTest extends TestCase
 
     public function test_projectless_entry_can_match_unique_name_when_email_differs(): void
     {
+        $this->employee->update(['trackabi_name' => 'Rene Refsman']);
         Http::fake(fn (Request $request) => Http::response([
             [...$this->entry(101), 'member' => [
                 'id' => 70, 'email' => 'different@example.com',
@@ -368,9 +439,11 @@ class TrackabiDirectImportTest extends TestCase
 
     public function test_projectless_entry_with_ambiguous_name_is_not_imported(): void
     {
+        $this->employee->update(['trackabi_name' => 'Rene Refsman']);
         Employee::query()->create([
             'name' => 'Rene Refsman', 'email' => 'other@example.com',
             'campaign_id' => $this->employee->campaign_id, 'active' => true,
+            'trackabi_name' => 'Rene Refsman',
         ]);
         Http::fake(fn (Request $request) => Http::response([
             [...$this->entry(101), 'member' => [
@@ -384,6 +457,22 @@ class TrackabiDirectImportTest extends TestCase
         $this->assertSame([], $plan['entries']);
         $this->assertCount(1, $plan['unmapped_projects']);
         $this->assertDatabaseCount('hubstaff_time_entries', 0);
+    }
+
+    public function test_direct_import_rejects_member_id_that_conflicts_with_email_mapping(): void
+    {
+        $this->employee->update(['trackabi_member_id' => 70, 'trackabi_email' => 'rene@example.com']);
+        Http::fake(fn (Request $request) => Http::response([
+            [...$this->entry(101), 'member' => [
+                'id' => 99, 'email' => 'rene@example.com',
+                'first_name' => 'Rene', 'last_name' => 'Refsman',
+            ]],
+        ]));
+
+        $plan = app(TrackabiDirectImportService::class)->preview($this->period);
+
+        $this->assertSame([], $plan['entries']);
+        $this->assertCount(1, $plan['unmapped_employees']);
     }
 
     public function test_coverage_is_read_only_and_separates_required_employees_from_exempt_employees(): void
@@ -495,9 +584,9 @@ class TrackabiDirectImportTest extends TestCase
             ->where('employee_id', $this->employee->id)->sole();
         $this->assertSame(10.0, (float) $result->scheduled_days);
         $this->assertSame(9.0, (float) $result->worked_days);
-        $this->assertSame(154800, (int) $result->lost_time_seconds);
-        $this->assertSame(2700.0, (float) $result->lost_time_amount);
-        $this->assertSame(4050.0, (float) $result->worked_salary_amount);
+        $this->assertSame(28800, (int) $result->lost_time_seconds);
+        $this->assertSame(450.0, (float) $result->lost_time_amount);
+        $this->assertSame(6300.0, (float) $result->worked_salary_amount);
         $this->assertSame(9.0, $result->displayWorkedDays());
 
         foreach (['2026-09-27', '2026-10-03', '2026-10-04', '2026-10-10'] as $date) {
@@ -505,12 +594,10 @@ class TrackabiDirectImportTest extends TestCase
                 ->where('employee_id', $this->employee->id)->whereDate('date', $date)
                 ->sole()->update(['paid_day_off' => true, 'status' => 'revisado_supervisor']);
         }
-        $justifiedOff = DailyTimeReview::query()->where('payroll_period_id', $this->period->id)
+        $lastOff = DailyTimeReview::query()->where('payroll_period_id', $this->period->id)
             ->where('employee_id', $this->employee->id)->whereDate('date', '2026-09-26')->sole();
-        $justifiedOff->update(DailyTimeReviewResource::secondsFromHourStates(
-            ['paid_day_off' => false, 'absence_justified' => true], $justifiedOff,
-        ));
-        $this->assertSame(25200, (int) $justifiedOff->fresh()->justified_absence_seconds);
+        $lastOff->update(['paid_day_off' => true, 'status' => 'revisado_supervisor']);
+        $this->assertSame(0, (int) $lastOff->fresh()->justified_absence_seconds);
         app(PayrollCalculationService::class)->recalculateEmployeePreservingManual($this->period, $this->employee);
 
         $result->refresh();
@@ -609,7 +696,7 @@ class TrackabiDirectImportTest extends TestCase
         $this->assertFalse($expectation->forDate($this->employee, Carbon::parse('2026-09-27'))['scheduled_work_day']);
     }
 
-    public function test_non_rotating_time_entry_outside_template_counts_as_work_when_period_allows_it(): void
+    public function test_non_rotating_timer_outside_template_does_not_count_as_work_without_insights(): void
     {
         $template = WorkScheduleTemplate::query()->create([
             'name' => 'Monday to Friday', 'schedule_type' => 'diurna', 'active' => true,
@@ -634,10 +721,8 @@ class TrackabiDirectImportTest extends TestCase
         $result = PayrollResult::query()->where('payroll_period_id', $this->period->id)
             ->where('employee_id', $this->employee->id)->sole();
         $this->assertFalse($saturday->scheduled_work_day);
-        $this->assertSame(28800, (int) $saturday->payable_seconds);
-        $this->assertSame(1.0, $result->displayWorkedDays());
-        $this->assertSame(80.0, (float) $result->worked_salary_amount);
-        $this->assertSame(1120.0, (float) $result->lost_time_amount);
+        $this->assertSame(0, (int) $saturday->payable_seconds);
+        $this->assertSame(0.0, $result->displayWorkedDays());
     }
 
     public function test_pagination_fetches_all_pages_and_preserves_exact_seconds(): void

@@ -758,12 +758,27 @@ class PayrollCalculationService
 
     private function isPayableUnscheduledWork(DailyTimeReview $review): bool
     {
+        if ($review->payrollPeriod && app(TrackabiActivityCoverageService::class)->applies($review->payrollPeriod)
+            && ! $review->scheduled_work_day) {
+            $employee = $review->employee;
+            if ($employee && (int) $employee->fixed_weekly_off_day === $review->date->dayOfWeekIso
+                && $employee->fixed_weekly_off_from_date?->lte($review->date)) {
+                return false;
+            }
+            if ((int) ($review->verified_tracked_seconds
+                ?? $review->trackabiActivity?->measured_activity_seconds) <= 0) {
+                return false;
+            }
+        }
         if ($review->payrollPeriod?->limit_payable_to_schedule) {
             return false;
         }
         if ($review->employee && $review->payrollPeriod
             && app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee)
             && $review->date->isWeekend()) {
+            return false;
+        }
+        if ($review->employee?->overtime_distribution_mode === 'weekly_flexible') {
             return false;
         }
         if (
@@ -853,6 +868,12 @@ class PayrollCalculationService
         if (app(SeptemberSecondHalfTimeCorrectionService::class)->isMarcoPeriod($period, $employee)
             || app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($period, $employee)) {
             $this->redistributeMarcoWeekendOvertime($period, $employee, $reviews);
+
+            return;
+        }
+
+        if ($employee->overtime_distribution_mode === 'weekly_flexible' && ! $this->isRotatingSchedule($employee)) {
+            $this->redistributeWeeklyFlexibleOvertime($period, $employee, $reviews);
 
             return;
         }
@@ -1026,6 +1047,46 @@ class PayrollCalculationService
             });
     }
 
+    private function redistributeWeeklyFlexibleOvertime(PayrollPeriod $period, Employee $employee, Collection $reviews): void
+    {
+        $weeklyAssigned = $this->preassignedWeeklySeconds($employee);
+        $rangeStart = $reviews->min(fn (DailyTimeReview $review) => $review->date->copy()->startOfWeek());
+        $rangeEnd = $reviews->max(fn (DailyTimeReview $review) => $review->date->copy()->endOfWeek());
+        $paidOutside = DailyTimeReview::query()->where('employee_id', $employee->id)
+            ->where('payroll_period_id', '!=', $period->id)
+            ->whereBetween('date', [$rangeStart, $rangeEnd])->get()
+            ->groupBy(fn (DailyTimeReview $review): string => $this->weekKey($review->date))
+            ->map(fn (Collection $days): int => (int) $days->sum('possible_overtime_seconds'));
+        $policy = $this->trackabiPaidActivityService->paidTimePolicy($employee);
+        $paidNonTrackable = ($policy['lunch_minutes'] + $policy['break_minutes']) * 60;
+
+        $reviews->groupBy(fn (DailyTimeReview $review): string => $this->weekKey($review->date))
+            ->each(function (Collection $weekReviews, string $weekKey) use ($weeklyAssigned, $paidOutside, $employee, $paidNonTrackable): void {
+                $remaining = max($weeklyAssigned - (int) $paidOutside->get($weekKey, 0), 0);
+                $ordered = $weekReviews->sort(function (DailyTimeReview $left, DailyTimeReview $right): int {
+                    if ($left->date->isWeekend() !== $right->date->isWeekend()) {
+                        return $left->date->isWeekend() ? -1 : 1;
+                    }
+
+                    return $left->date->getTimestamp() <=> $right->date->getTimestamp();
+                });
+                foreach ($ordered as $review) {
+                    $measured = $review->verified_tracked_seconds
+                        ?? $review->trackabiActivity?->measured_activity_seconds;
+                    $regularTrackable = $review->scheduled_work_day
+                        ? max((int) $review->expected_ordinary_seconds - $paidNonTrackable, 0)
+                        : 0;
+                    $available = $review->paid_day_off || $measured === null
+                        ? 0 : max((int) $measured - $regularTrackable, 0);
+                    $review->preassigned_overtime_seconds = min($available, $remaining);
+                    $remaining -= (int) $review->preassigned_overtime_seconds;
+                }
+                foreach ($weekReviews as $review) {
+                    $this->calculateDailyReview($review, $employee);
+                }
+            });
+    }
+
     private function applyPeriodSpecificPayrollCorrections(PayrollPeriod $period, Employee $employee): void
     {
         app(JulySecondHalfPayrollCorrectionsService::class)->applyForEmployee($period, $employee);
@@ -1052,8 +1113,12 @@ class PayrollCalculationService
         foreach (CarbonPeriod::create($period->starts_at, $period->ends_at) as $date) {
             $dateString = $date->toDateString();
             $entries = $entriesByEmployeeDate->get($employee->id.'|'.$dateString, collect());
-            $hubstaffTotalSeconds = (int) $entries->sum('total_seconds');
-            $idleSeconds = (int) $entries->sum('idle_seconds');
+            $workEntries = $entries->reject(fn (HubstaffTimeEntry $entry): bool =>
+                $entry->source_provider === 'trackabi_api'
+                && $dateString >= config('trackabi_direct.special_projects_from_date')
+                && isset(config('trackabi_direct.special_projects')[(int) $entry->trackabi_project_id]));
+            $hubstaffTotalSeconds = (int) $workEntries->sum('total_seconds');
+            $idleSeconds = (int) $workEntries->sum('idle_seconds');
 
             $review = DailyTimeReview::query()
                 ->where('payroll_period_id', $period->id)
@@ -1070,10 +1135,10 @@ class PayrollCalculationService
 
             $review->fill([
                 'hubstaff_total_seconds' => $hubstaffTotalSeconds,
-                'hubstaff_regular_seconds' => (int) $entries->sum('regular_seconds'),
+                'hubstaff_regular_seconds' => (int) $workEntries->sum('regular_seconds'),
                 'hubstaff_idle_seconds' => $idleSeconds,
-                'activity_percentage' => $this->weightedPercentage($entries, 'activity_percentage'),
-                'idle_percentage' => $this->weightedPercentage($entries, 'idle_percentage'),
+                'activity_percentage' => $this->weightedPercentage($workEntries, 'activity_percentage'),
+                'idle_percentage' => $this->weightedPercentage($workEntries, 'idle_percentage'),
                 'pto_seconds' => (int) $entries->sum('pto_seconds'),
                 'holiday_seconds' => (int) $entries->sum('holiday_seconds'),
                 'paid_break_seconds' => $this->paidBreakSeconds($entries),

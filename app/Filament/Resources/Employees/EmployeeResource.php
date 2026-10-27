@@ -153,6 +153,18 @@ class EmployeeResource extends Resource
                 ->searchable()
                 ->preload()
                 ->nullable(),
+            Select::make('fixed_weekly_off_day')
+                ->label('Descanso semanal fijo')
+                ->options([1 => 'Lunes', 2 => 'Martes', 3 => 'Miércoles', 4 => 'Jueves',
+                    5 => 'Viernes', 6 => 'Sábado', 7 => 'Domingo'])
+                ->live()
+                ->nullable()
+                ->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) !== 'rotativa'),
+            DatePicker::make('fixed_weekly_off_from_date')
+                ->label('Vigente desde')
+                ->required(fn (Get $get) => filled($get('fixed_weekly_off_day')))
+                ->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) !== 'rotativa'
+                    && filled($get('fixed_weekly_off_day'))),
             DatePicker::make('schedule_cycle_anchor_date')
                 ->label('Inicio del ciclo rotativo')
                 ->helperText('Selecciona el primer día laborado del ciclo.')
@@ -204,6 +216,9 @@ class EmployeeResource extends Resource
                 ->default(0)
                 ->rules([fn (Get $get): Closure => self::assignedOvertimeRule($get)]),
             TextInput::make('preassigned_overtime_period_hours')->label('Horas extra preasignadas del período')->helperText('Opcional. En cero se calcula desde la configuración semanal y los días programados.')->numeric()->minValue(0)->default(0),
+            Select::make('overtime_distribution_mode')->label('Distribución de horas extra')
+                ->options(['daily' => 'Diaria', 'weekly_flexible' => 'Semanal flexible'])
+                ->default('daily')->required(),
             TextInput::make('overtime_hourly_rate')->label('Pago hora extra')->numeric()->minValue(0)->default(0),
             TextInput::make('hubstaff_expected_hours_per_workday')->label('Horas esperadas Hubstaff por día trabajado')->numeric()->minValue(0)->nullable()->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),
             TextInput::make('paid_hours_per_workday')->label('Horas pagadas por día trabajado')->numeric()->minValue(0)->nullable()->visible(fn (Get $get) => self::scheduleCode($get('schedule_type_id')) === 'rotativa'),

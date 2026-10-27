@@ -21,6 +21,7 @@ use App\Services\PayrollCalculationService;
 use Illuminate\Validation\ValidationException;
 use App\Services\Trackabi\TrackabiActivityCoverageService;
 use App\Services\Trackabi\TrackabiPaidActivityService;
+use App\Services\Trackabi\TrackabiPayrollActivityAuditService;
 use App\Services\Trackabi\TrackabiInsightsCsvImportService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -89,6 +90,59 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $this->assertDatabaseCount('trackabi_daily_activities', 0);
         $this->assertDatabaseCount('trackabi_activity_import_batches', 0);
         Http::assertNothingSent();
+    }
+
+    public function test_measured_gap_is_not_completed_by_logged_time_and_justification_returns_only_its_credit(): void
+    {
+        $review = $this->review();
+        $path = $this->csv("\"Aguilar, Dereck\",10:23,10:23,06:30,01:15\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
+
+        $fresh = $review->fresh();
+        $this->assertSame(27900, (int) $fresh->trackabiActivity->measured_activity_seconds);
+        $this->assertSame(28800, (int) $fresh->expected_hubstaff_seconds);
+        $this->assertSame(900, (int) $fresh->estimated_lost_seconds);
+        $this->assertSame(27900, (int) $fresh->payable_seconds);
+
+        $fresh->update(['justified_absence_seconds' => 600, 'status' => 'revisado_supervisor']);
+        app(PayrollCalculationService::class)->recalculateEmployeePreservingManual($this->period, $this->employee);
+        $audit = app(TrackabiPayrollActivityAuditService::class)->report($this->period);
+        $row = collect($audit['rows'])->firstWhere('date', '2026-10-09');
+        $this->assertSame(900, $row['raw_gap_seconds']);
+        $this->assertSame(600, $row['justified_seconds']);
+        $this->assertSame(300, $row['final_lost_seconds']);
+        $this->assertSame(1, $audit['gap_distribution']['11-15 min']);
+        $this->assertSame(0, $audit['unexplained_full_credit']);
+    }
+
+    public function test_audit_distinguishes_missing_activity_from_explicit_zero(): void
+    {
+        $this->review();
+        $audit = app(TrackabiPayrollActivityAuditService::class)->report($this->period);
+        $row = collect($audit['rows'])->firstWhere('date', '2026-10-09');
+        $this->assertNull($row['desktop_activity_seconds']);
+        $this->assertNull($row['raw_gap_seconds']);
+        $this->assertSame(1, $audit['activity_missing']);
+    }
+
+    public function test_activity_gap_alert_is_idempotent_and_resolves_after_review(): void
+    {
+        $review = $this->review();
+        $path = $this->csv("\"Aguilar, Dereck\",09:30,09:30,06:20,01:00\n");
+        app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
+        $audit = app(TrackabiPayrollActivityAuditService::class);
+        $this->assertSame(1, $audit->report($this->period)['gap_above_observed_range']);
+        $this->assertDatabaseMissing('tracking_import_alerts', ['code' => 'TRACKABI_ACTIVITY_GAP_ABOVE_OBSERVED_RANGE']);
+
+        $audit->reconcileAlerts($this->period);
+        $audit->reconcileAlerts($this->period);
+        $this->assertSame(1, TrackingImportAlert::query()
+            ->where('code', 'TRACKABI_ACTIVITY_GAP_ABOVE_OBSERVED_RANGE')->count());
+        $review->update(['status' => 'revisado_supervisor', 'supervisor_comment' => 'Revisado']);
+        $audit->reconcileAlerts($this->period);
+        $this->assertDatabaseHas('tracking_import_alerts', [
+            'code' => 'TRACKABI_ACTIVITY_GAP_ABOVE_OBSERVED_RANGE', 'resolved' => true,
+        ]);
     }
 
     public function test_paid_lunch_and_break_credit_measured_day_without_erasing_remaining_loss(): void
@@ -186,7 +240,8 @@ class TrackabiInsightsCsvImportTest extends TestCase
         app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
         $this->assertSame(28800, (int) $review->fresh()->payable_seconds);
         $this->assertSame(0, (int) $review->fresh()->estimated_lost_seconds);
-        $this->assertSame(2280, (int) $review->fresh()->paid_time_not_tracked_seconds);
+        $this->assertSame(4500, (int) $review->fresh()->paid_time_not_tracked_seconds);
+        $this->assertSame(24300, (int) $review->fresh()->expected_hubstaff_seconds);
 
         $exact = $this->csv("\"Aguilar, Dereck\",09:00,09:00,06:00,00:45\n", 'exact-boundary.csv');
         app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $exact);
@@ -206,7 +261,7 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $this->assertSame(0, (int) $review->fresh()->paid_time_not_tracked_seconds);
     }
 
-    public function test_profile_lunch_is_capped_by_missing_time_and_not_credited_twice(): void
+    public function test_profile_lunch_keeps_a_fixed_trackable_target_without_double_payment(): void
     {
         config(['trackabi_direct.insights_paid_lunch_minutes' => 60,
             'trackabi_direct.insights_paid_break_minutes' => 15]);
@@ -216,8 +271,8 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $path = $this->csv("\"Aguilar, Dereck\",09:00,09:00,07:00,00:00\n");
         app(TrackabiInsightsCsvImportService::class)->import($this->period, Carbon::parse('2026-10-09'), $path);
 
-        $this->assertSame(3600, (int) $review->fresh()->paid_time_not_tracked_seconds);
-        $this->assertSame(25200, (int) $review->fresh()->expected_hubstaff_seconds);
+        $this->assertSame(4500, (int) $review->fresh()->paid_time_not_tracked_seconds);
+        $this->assertSame(24300, (int) $review->fresh()->expected_hubstaff_seconds);
         $this->assertSame(28800, (int) $review->fresh()->payable_seconds);
     }
 
@@ -230,8 +285,8 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $review = $this->review(43200);
         $service = app(TrackabiPaidActivityService::class);
 
-        $this->assertSame(3600, $service->allowanceSeconds($review, 39600));
-        $this->assertSame(39600, $service->trackableTargetSeconds($review, 39600));
+        $this->assertSame(4500, $service->allowanceSeconds($review, 39600));
+        $this->assertSame(38700, $service->trackableTargetSeconds($review, 39600));
         $this->assertSame(4500, $service->allowanceSeconds($review, 37800));
     }
 
@@ -259,8 +314,8 @@ class TrackabiInsightsCsvImportTest extends TestCase
         $this->employee->update(['campaign_id' => $autoFinance->id, 'trackabi_member_id' => null]);
         $review->unsetRelation('employee');
         $this->assertSame(5400, $service->allowanceSeconds($review, 21600));
-        $this->assertSame(1800, $service->allowanceSeconds($review, 27000));
-        $this->assertSame(0, $service->allowanceSeconds($review, 32400));
+        $this->assertSame(5400, $service->allowanceSeconds($review, 27000));
+        $this->assertSame(5400, $service->allowanceSeconds($review, 32400));
         $this->assertSame(0, $service->allowanceSeconds($review, 0));
     }
 

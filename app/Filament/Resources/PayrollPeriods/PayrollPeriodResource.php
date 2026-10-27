@@ -16,6 +16,7 @@ use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
 use App\Services\HubstaffEmployeeMappingService;
 use App\Services\PayrollCalculationService;
+use App\Services\OperationsFinalReviewService;
 use App\Services\Trackabi\TrackabiActivityCoverageService;
 use App\Services\Trackabi\TrackabiDirectImportService;
 use App\Services\Trackabi\TrackabiInsightsCsvImportService;
@@ -113,12 +114,23 @@ class PayrollPeriodResource extends Resource
                 TextColumn::make('starts_at')->label('Desde')->date()->sortable(),
                 TextColumn::make('ends_at')->label('Hasta')->date()->sortable(),
                 TextColumn::make('status')->label('Estado')->badge()->formatStateUsing(fn (string $state) => self::statusOptions()[$state] ?? $state),
+                TextColumn::make('operations_review')->label('Revisión Operaciones')->badge()
+                    ->state(function (PayrollPeriod $record): string {
+                        $service = app(OperationsFinalReviewService::class);
+                        if (! $service->required($record)) {
+                            return 'No aplica';
+                        }
+
+                        return $service->isCurrent($record) ? 'Aprobada'
+                            : ($record->operations_final_reviewed_by ? 'Desactualizada' : 'Pendiente');
+                    }),
                 TextColumn::make('employees_count')->label('Empleados')->state(fn () => Employee::query()->count()),
                 TextColumn::make('payroll_results_count')->label('Planillas calculadas'),
                 TextColumn::make('unmapped')->label('Sin mapeo')->state(fn (PayrollPeriod $record) => HubstaffTimeEntry::query()->where('payroll_period_id', $record->id)->where('active', true)->whereNull('employee_id')->distinct('hubstaff_member')->count('hubstaff_member')),
             ])
             ->recordActions([
                 self::exportPayrollAction(),
+                self::operationsFinalReviewAction(),
                 self::closePeriodAction(),
                 EditAction::make()->label('Editar'),
             ])
@@ -330,6 +342,27 @@ class PayrollPeriodResource extends Resource
             ->visible(fn (PayrollPeriod $record) => (auth()->user()?->isRrhh() ?? false) && $record->status !== 'cerrado');
     }
 
+    public static function operationsFinalReviewAction(): Action
+    {
+        return Action::make('operationsFinalReview')
+            ->label('Revisión final Operaciones')
+            ->icon('heroicon-o-check-badge')
+            ->requiresConfirmation()
+            ->modalDescription('Confirma que terminaron las revisiones de supervisores. Quedará registrada tu identidad y la aprobación se invalidará si cambian los datos.')
+            ->action(function (PayrollPeriod $record, OperationsFinalReviewService $service): void {
+                try {
+                    $service->approve($record, auth()->user());
+                    Notification::make()->title('Revisión final de Operaciones aprobada')->success()->send();
+                } catch (\RuntimeException $exception) {
+                    Notification::make()->title('No se pudo aprobar la revisión final')
+                        ->body($exception->getMessage())->danger()->send();
+                }
+            })
+            ->visible(fn (PayrollPeriod $record): bool => (bool) auth()->user()?->can_final_review_operations
+                && $record->status !== 'cerrado'
+                && app(OperationsFinalReviewService::class)->required($record));
+    }
+
     public static function mapHubstaffEmployeeAction(): Action
     {
         return Action::make('mapHubstaffEmployee')
@@ -435,6 +468,14 @@ class PayrollPeriodResource extends Resource
                 if ($summary['missing'] > 0 || $summary['legacy_historical'] > 0) {
                     Notification::make()->title('No se puede cerrar: actividad Trackabi pendiente de resolver')
                         ->body('Esperados: '.$summary['expected'].'; disponibles: '.$summary['available'].'; actividad cero: '.$summary['zero'].'; faltantes: '.$summary['missing'].'; revisiones históricas pendientes de reemplazo: '.$summary['legacy_historical'].'.')
+                        ->danger()->send();
+
+                    return;
+                }
+
+                $operations = app(OperationsFinalReviewService::class);
+                if ($operations->required($record) && ! $operations->isCurrent($record)) {
+                    Notification::make()->title('No se puede cerrar: falta revisión final vigente de Operaciones')
                         ->danger()->send();
 
                     return;
