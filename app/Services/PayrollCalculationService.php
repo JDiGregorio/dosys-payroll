@@ -1268,6 +1268,7 @@ class PayrollCalculationService
 
         app(SeptemberSecondHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
         app(OctoberFirstHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
+        app(OctoberSecondHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
     }
 
     private function isRotatingSchedule(Employee $employee): bool

@@ -9,6 +9,7 @@ use App\Services\EmployeeTrainingHoursAdjustmentService;
 use App\Services\JulySecondHalfPayrollCorrectionsService;
 use App\Services\PalmettoDebtCollectionsScheduleCorrectionService;
 use App\Services\OctoberFirstHalfTimeCorrectionService;
+use App\Services\OctoberSecondHalfTimeCorrectionService;
 use App\Services\OctoberFirstHalfBonusClassificationService;
 use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
@@ -28,6 +29,25 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 
 require __DIR__.'/trackabi-direct.php';
+
+Artisan::command('payroll:correct-october-second-half {--period=11} {--apply : Guarda los ajustes y recalcula únicamente los empleados afectados}', function (OctoberSecondHalfTimeCorrectionService $correction, TimeParserService $parser): int {
+    $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
+    $rows = $correction->preview($period);
+    $this->table(['Empleado', 'Fecha', 'Acción', 'Actividad', 'Pagable actual', 'Estado'], array_map(fn (array $row): array => [
+        $row['employee'], $row['date'], $row['action'],
+        $row['measured_seconds'] === null ? 'N/D' : $parser->secondsToHourMinute((int) $row['measured_seconds']),
+        $parser->secondsToHourMinute($row['current_payable_seconds']), $row['status'],
+    ], $rows));
+    $this->line('Marco: sin modificación; su distribución flexible actual ya limita el OT a 10 h por semana.');
+    if (! $this->option('apply')) {
+        $this->info('Vista previa: no se modificaron datos.');
+
+        return self::SUCCESS;
+    }
+    $this->info('Ajustes guardados: '.$correction->apply($period));
+
+    return self::SUCCESS;
+})->purpose('Ajustes acotados del período 11: OFF, Kelvin, Elalf y Francisco.');
 
 Artisan::command('payroll:classify-october-bonuses {--period=10} {--apply : Reclasifica sin recalcular la planilla}', function (OctoberFirstHalfBonusClassificationService $service): int {
     $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
