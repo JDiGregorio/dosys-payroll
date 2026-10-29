@@ -19,7 +19,7 @@
         ['Salario por día', $money($result->daily_rate)],
         ['Salario por hora', $money($result->hourly_rate)],
         ['Precio hora extra', $money($result->overtime_hourly_rate)],
-        ['Días pagables (equiv.)', $number($result->displayWorkedDays())],
+        ['Días Trabajados', $number($result->displayWorkedDays())],
         ['Total salario quincenal', $money($result->worked_salary_amount)],
     ];
 

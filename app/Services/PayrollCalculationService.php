@@ -833,7 +833,8 @@ class PayrollCalculationService
         return (float) $reviews->sum(function (DailyTimeReview $review): float {
             if ($review->expected_ordinary_seconds <= 0) {
                 if ($review->employee && $review->payrollPeriod
-                    && app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee)
+                    && (app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee)
+                        || app(MarcoOctoberSecondHalfOvertimeCorrectionService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee))
                     && (int) $review->possible_overtime_seconds > 0) {
                     return 1.0;
                 }
@@ -1269,6 +1270,7 @@ class PayrollCalculationService
         app(SeptemberSecondHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
         app(OctoberFirstHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
         app(OctoberSecondHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
+        app(MarcoOctoberSecondHalfOvertimeCorrectionService::class)->adjustExpectation($review, $employee);
     }
 
     private function isRotatingSchedule(Employee $employee): bool
