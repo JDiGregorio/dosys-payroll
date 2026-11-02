@@ -18,6 +18,7 @@ class PayrollPeriod extends Model
             'starts_at' => 'date',
             'ends_at' => 'date',
             'apply_deductions' => 'boolean',
+            'operations_final_reviewed_at' => 'datetime',
         ];
     }
 

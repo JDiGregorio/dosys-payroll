@@ -8,6 +8,7 @@ use App\Models\Employee;
 use App\Models\HubstaffImport;
 use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
+use App\Models\TrackabiDayExclusion;
 use App\Models\TrackabiProjectMapping;
 use App\Models\TrackingImportAlert;
 use App\Services\PayrollCalculationService;
@@ -15,7 +16,6 @@ use App\Services\TimeParserService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use RuntimeException;
 
 class TrackabiDirectImportService
@@ -29,6 +29,8 @@ class TrackabiDirectImportService
         private readonly PayrollCalculationService $payroll,
         private readonly TimeParserService $timeParser,
         private readonly TrackabiDirectTimeEntryValidator $entryValidator,
+        private readonly TrackabiPaidTimeComplianceService $paidTimeCompliance,
+        private readonly TrackabiEmployeeIdentityResolver $identityResolver,
     ) {}
 
     public function assertPeriod(PayrollPeriod $period): void
@@ -196,6 +198,8 @@ class TrackabiDirectImportService
         }
 
         $employees = Employee::query()->where('active', true)->get();
+        $excludedDays = TrackabiDayExclusion::query()->where('payroll_period_id', $period->id)->get()
+            ->keyBy(fn (TrackabiDayExclusion $day): string => $day->employee_id.'|'.$day->date->toDateString());
         $raw = $campaign
             ? $mappings->keys()->flatMap(fn ($projectId): array => $this->fetchEntries($from, $to, (int) $projectId))->all()
             : $this->fetchEntries($from, $to);
@@ -204,6 +208,9 @@ class TrackabiDirectImportService
         $unmappedEmployees = [];
         $suspiciousEntries = [];
         $unmappedProjectCoverage = [];
+        $specialProjectCoverage = [];
+        $ignoredExternalEntries = 0;
+        $excludedDayEntries = 0;
         $seen = [];
 
         foreach ($raw as $entry) {
@@ -225,8 +232,21 @@ class TrackabiDirectImportService
             $seen[$externalId] = true;
 
             $projectId = $entry['project']['id'] ?? null;
+            if (in_array((int) ($entry['member']['id'] ?? 0), config('trackabi_direct.direct_ignored_member_ids', []), true)) {
+                $ignoredExternalEntries++;
+
+                continue;
+            }
             $mapping = is_numeric($projectId) ? $mappings->get((int) $projectId) : null;
+            $specialCategory = $date >= config('trackabi_direct.special_projects_from_date') && is_numeric($projectId)
+                ? config('trackabi_direct.special_projects.'.(int) $projectId)
+                : null;
             $employee = $this->resolveEmployee($employees, $entry['member'] ?? [], null);
+            if ($employee && $excludedDays->has($employee->id.'|'.$date)) {
+                $excludedDayEntries++;
+
+                continue;
+            }
             $employeeMapping = $employee
                 ? $mappings->first(fn (TrackabiProjectMapping $candidate): bool => (int) $candidate->campaign_id === (int) $employee->campaign_id)
                 : null;
@@ -255,7 +275,7 @@ class TrackabiDirectImportService
 
                 continue;
             }
-            if (! $mapping && ! $missingProject) {
+            if (! $mapping && ! $missingProject && ! $specialCategory) {
                 $key = is_numeric($projectId) ? (string) $projectId : 'NULL';
                 $unmappedProjectCoverage[$key] ??= [
                     'project_id' => is_numeric($projectId) ? (int) $projectId : null,
@@ -284,6 +304,10 @@ class TrackabiDirectImportService
                 $unmappedEmployees[] = ['member_id' => $entry['member']['id'] ?? null, 'email' => $entry['member']['email'] ?? null, 'date' => $date];
 
                 continue;
+            }
+
+            if ($specialCategory) {
+                $specialProjectCoverage[$specialCategory] = ($specialProjectCoverage[$specialCategory] ?? 0) + 1;
             }
 
             $billable = $this->seconds($entry['billable'] ?? null);
@@ -315,7 +339,8 @@ class TrackabiDirectImportService
                 'member_name' => trim(($entry['member']['first_name'] ?? '').' '.($entry['member']['last_name'] ?? '')),
                 'campaign_id' => $employee->campaign_id,
                 'project_id' => $missingProject ? null : (int) $projectId,
-                'project_name' => $missingProject ? null : ($entry['project']['name'] ?? $mapping->trackabi_project_name),
+                'project_name' => $missingProject ? null : ($entry['project']['name'] ?? $mapping?->trackabi_project_name),
+                'special_category' => $specialCategory,
                 'missing_project' => $missingProject,
                 'date' => $date,
                 'logged_seconds' => $logged['seconds'],
@@ -344,6 +369,9 @@ class TrackabiDirectImportService
             'employees_matched' => count(array_unique(array_column($rows, 'employee_id'))),
             'unmapped_projects' => array_values(array_unique($unmappedProjects, SORT_REGULAR)),
             'unmapped_project_coverage' => array_values($unmappedProjectCoverage),
+            'special_project_coverage' => $specialProjectCoverage,
+            'ignored_external_entries' => $ignoredExternalEntries,
+            'excluded_day_entries' => $excludedDayEntries,
             'unmapped_employees' => array_values(array_unique($unmappedEmployees, SORT_REGULAR)),
             'suspicious_entries' => $suspiciousEntries,
             'missing_logged_time' => count(array_filter($raw, fn ($entry): bool => ($entry['logged_time'] ?? null) === null)),
@@ -463,6 +491,7 @@ class TrackabiDirectImportService
                 foreach ($affected as $employeeId => $unused) {
                     $this->payroll->recalculateEmployeePreservingManual($lockedPeriod, Employee::query()->findOrFail($employeeId));
                 }
+                $this->paidTimeCompliance->reconcile($lockedPeriod);
 
                 $estimatedDays = 0;
 
@@ -544,30 +573,27 @@ class TrackabiDirectImportService
         }
 
         $eligible = $campaignId === null ? $employees : $employees->where('campaign_id', $campaignId);
-        $email = strtolower(trim((string) ($member['email'] ?? '')));
-        if ($email !== '') {
-            $matches = $eligible->filter(fn (Employee $employee): bool => strtolower(trim((string) $employee->email)) === $email);
-            if ($matches->count() === 1) {
-                return $matches->first();
+
+        $memberId = isset($member['id']) ? (int) $member['id'] : null;
+        $mappedId = $memberId !== null && $eligible->contains(
+            fn (Employee $employee): bool => (int) $employee->trackabi_member_id === $memberId,
+        );
+        if (! $mappedId && $memberId !== null) {
+            $email = strtolower(trim((string) ($member['email'] ?? '')));
+            $emailOwner = $eligible->first(fn (Employee $employee): bool =>
+                $email !== '' && ($email === strtolower(trim((string) $employee->trackabi_email))
+                    || $email === strtolower(trim((string) $employee->email))),
+            );
+            if ($emailOwner?->trackabi_member_id !== null) {
+                return null;
             }
         }
 
-        $name = $this->normalizeName(trim(($member['first_name'] ?? '').' '.($member['last_name'] ?? '')));
-        if ($name === '') {
-            return null;
-        }
-        $tokens = array_filter(explode(' ', $name));
-        $matches = $eligible->filter(function (Employee $employee) use ($tokens): bool {
-            $haystack = $this->normalizeName($employee->name.' '.$employee->hubstaff_name);
-
-            return collect($tokens)->every(fn ($token): bool => str_contains($haystack, $token));
-        });
-
-        return $matches->count() === 1 ? $matches->first() : null;
-    }
-
-    private function normalizeName(string $name): string
-    {
-        return (string) Str::of(Str::ascii($name))->lower()->replaceMatches('/[^a-z0-9]+/', ' ')->squish();
+        return $this->identityResolver->resolve(
+            $eligible,
+            $mappedId ? $memberId : null,
+            $member['email'] ?? null,
+            trim(($member['first_name'] ?? '').' '.($member['last_name'] ?? '')),
+        );
     }
 }

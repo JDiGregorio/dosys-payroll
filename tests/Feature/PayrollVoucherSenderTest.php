@@ -151,7 +151,7 @@ class PayrollVoucherSenderTest extends TestCase
         $this->assertStringContainsString('Total ingresos extra', $html);
         $this->assertStringContainsString('L 8,300.00', $html);
         $this->assertStringContainsString('Comentario institucional', $html);
-        $this->assertStringContainsString('Días pagables (equiv.)', $html);
+        $this->assertStringContainsString('Días Trabajados', $html);
     }
 
     public function test_it_does_not_send_voucher_to_inactive_employee(): void

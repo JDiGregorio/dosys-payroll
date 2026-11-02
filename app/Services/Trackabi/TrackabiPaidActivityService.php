@@ -29,14 +29,13 @@ class TrackabiPaidActivityService
 
         $employee = $review->employee;
         $expected = max((int) $review->expected_paid_seconds, 0);
-        $missing = max($expected - $measuredSeconds, 0);
-        if ($expected === 0 || $missing === 0) {
+        if ($expected === 0) {
             return 0;
         }
 
         $policy = $this->paidTimePolicy($employee);
 
-        return min($missing, max($policy['lunch_minutes'] + $policy['break_minutes'], 0) * 60);
+        return min($expected, max($policy['lunch_minutes'] + $policy['break_minutes'], 0) * 60);
     }
 
     public function trackableTargetSeconds(DailyTimeReview $review, int $measuredSeconds): int
@@ -44,8 +43,8 @@ class TrackabiPaidActivityService
         return max((int) $review->expected_paid_seconds - $this->allowanceSeconds($review, $measuredSeconds), 0);
     }
 
-    /** @return array{lunch_minutes: int, break_minutes: int} */
-    private function paidTimePolicy(Employee $employee): array
+    /** @return array{lunch_minutes: int, break_minutes: int, break_minutes_per_occurrence: int, break_occurrences: int} */
+    public function paidTimePolicy(Employee $employee): array
     {
         $campaign = strtoupper(trim((string) $employee->campaign?->name));
         $policies = config('trackabi_direct.insights_paid_time_policies', []);
@@ -54,15 +53,19 @@ class TrackabiPaidActivityService
             ? ($special[(int) $employee->trackabi_member_id] ?? $policies[$campaign] ?? null)
             : ($policies[$campaign] ?? null);
 
+        $breakMinutes = max((int) ($policy['break_minutes'] ?? max(
+            (int) $employee->paid_break_minutes_per_workday,
+            (int) config('trackabi_direct.insights_paid_break_minutes', 15),
+        )), 0);
+
         return [
             'lunch_minutes' => max((int) ($policy['lunch_minutes'] ?? max(
                 (int) $employee->paid_lunch_minutes_per_workday,
                 (int) config('trackabi_direct.insights_paid_lunch_minutes', 60),
             )), 0),
-            'break_minutes' => max((int) ($policy['break_minutes'] ?? max(
-                (int) $employee->paid_break_minutes_per_workday,
-                (int) config('trackabi_direct.insights_paid_break_minutes', 15),
-            )), 0),
+            'break_minutes' => $breakMinutes,
+            'break_minutes_per_occurrence' => max((int) ($policy['break_minutes_per_occurrence'] ?? $breakMinutes), 0),
+            'break_occurrences' => max((int) ($policy['break_occurrences'] ?? ($breakMinutes > 0 ? 1 : 0)), 0),
         ];
     }
 }

@@ -32,6 +32,14 @@ class ScheduleExpectationService
         $scheduledWorkDay = $scheduleType === 'rotativa'
             ? $this->isRotatingWorkDay($employee, $assignment, $date)
             : $this->isTemplateWorkDay($template, $date);
+        if ($scheduleType !== 'rotativa' && ! $template
+            && $employee->overtime_distribution_mode === 'weekly_flexible' && $date->isWeekend()) {
+            $scheduledWorkDay = false;
+        }
+        if ($scheduleType !== 'rotativa' && (int) $employee->fixed_weekly_off_day === $date->dayOfWeekIso
+            && $employee->fixed_weekly_off_from_date?->lte($date)) {
+            $scheduledWorkDay = false;
+        }
         $expectedOrdinarySeconds = $scheduledWorkDay
             ? $this->expectedOrdinarySeconds($employee, $template, $assignment, $date, $scheduleType)
             : 0;

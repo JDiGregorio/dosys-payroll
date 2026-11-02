@@ -1056,6 +1056,49 @@ class FilamentPagesTest extends TestCase
             ->assertDontSee('Registros de Hubstaff');
     }
 
+    public function test_daily_review_paid_time_and_weekly_overtime_tabs_render(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Revisión Trackabi',
+            'starts_at' => '2026-10-11',
+            'ends_at' => '2026-10-25',
+        ]);
+        $employee = Employee::query()->create([
+            'name' => 'Empleado Trackabi',
+            'active' => true,
+            'daily_hours' => 8,
+            'preassigned_overtime_weekly_hours' => 5,
+        ]);
+        $review = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id,
+            'employee_id' => $employee->id,
+            'date' => '2026-10-22',
+            'expected_ordinary_seconds' => 28800,
+            'scheduled_work_day' => true,
+        ]);
+        $user = User::query()->create([
+            'name' => 'RRHH Trackabi',
+            'email' => 'rrhh-trackabi-tabs@example.com',
+            'password' => 'password',
+            'profile' => 'rrhh',
+            'active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->get("/admin/daily-time-reviews/{$review->id}/edit")
+            ->assertOk()
+            ->assertSee('Pausas pagadas');
+
+        $this->assertStringContainsString(
+            'Sin jornada con actividad',
+            view('filament.resources.daily-time-reviews.paid-time-compliance', ['record' => $review])->render(),
+        );
+        $this->assertStringContainsString(
+            'OT aprobado',
+            view('filament.resources.daily-time-reviews.weekly-overtime', ['record' => $review])->render(),
+        );
+    }
+
     public function test_closed_period_daily_review_is_read_only(): void
     {
         $user = User::query()->create([

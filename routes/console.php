@@ -9,6 +9,8 @@ use App\Services\EmployeeTrainingHoursAdjustmentService;
 use App\Services\JulySecondHalfPayrollCorrectionsService;
 use App\Services\PalmettoDebtCollectionsScheduleCorrectionService;
 use App\Services\OctoberFirstHalfTimeCorrectionService;
+use App\Services\OctoberSecondHalfTimeCorrectionService;
+use App\Services\MarcoOctoberSecondHalfOvertimeCorrectionService;
 use App\Services\OctoberFirstHalfBonusClassificationService;
 use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
@@ -29,6 +31,59 @@ use Illuminate\Support\Facades\DB;
 
 require __DIR__.'/trackabi-direct.php';
 require __DIR__.'/client-weekly-hours.php';
+
+Artisan::command('payroll:cap-marco-october-ot {--period=11} {--refresh-days : Recalcula solo el conteo de días de Marco sin cambiar importes} {--apply : Guarda el ajuste solicitado}', function (MarcoOctoberSecondHalfOvertimeCorrectionService $correction, TimeParserService $parser): int {
+    $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
+    if ($this->option('refresh-days')) {
+        $current = \App\Models\PayrollResult::query()->where('payroll_period_id', $period->id)
+            ->whereHas('employee', fn ($query) => $query->where('name', 'Marco Antonio Lara'))
+            ->value('worked_days');
+        $this->line('Marco: días actuales '.($current ?? 'N/D').'; objetivo 15.00. Los importes deben quedar intactos.');
+        if (! $this->option('apply')) {
+            $this->info('Vista previa: no se modificaron datos.');
+
+            return self::SUCCESS;
+        }
+        $result = $correction->refreshWorkedDays($period);
+        $this->info("Días actualizados: {$result['before']} -> {$result['after']}.");
+
+        return self::SUCCESS;
+    }
+    $rows = $correction->preview($period);
+    $this->table(['Fecha', 'OT actual', 'OT propuesto', 'Pagable actual', 'Estado'], array_map(fn (array $row): array => [
+        $row['date'], $parser->secondsToHourMinute($row['current_overtime_seconds']),
+        $parser->secondsToHourMinute($row['proposed_overtime_seconds']),
+        $parser->secondsToHourMinute($row['current_payable_seconds']), $row['status'],
+    ], $rows));
+    $this->line('Los registros Trackabi y el OT de 18/10 y 24/10 permanecen intactos.');
+    if (! $this->option('apply')) {
+        $this->info('Vista previa: no se modificaron datos.');
+
+        return self::SUCCESS;
+    }
+    $this->info('Días ajustados: '.$correction->apply($period));
+
+    return self::SUCCESS;
+})->purpose('Limita a 1:00 el OT de Marco en tres días del período 11.');
+
+Artisan::command('payroll:correct-october-second-half {--period=11} {--apply : Guarda los ajustes y recalcula únicamente los empleados afectados}', function (OctoberSecondHalfTimeCorrectionService $correction, TimeParserService $parser): int {
+    $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
+    $rows = $correction->preview($period);
+    $this->table(['Empleado', 'Fecha', 'Acción', 'Actividad', 'Pagable actual', 'Estado'], array_map(fn (array $row): array => [
+        $row['employee'], $row['date'], $row['action'],
+        $row['measured_seconds'] === null ? 'N/D' : $parser->secondsToHourMinute((int) $row['measured_seconds']),
+        $parser->secondsToHourMinute($row['current_payable_seconds']), $row['status'],
+    ], $rows));
+    $this->line('Marco: sin modificación; su distribución flexible actual ya limita el OT a 10 h por semana.');
+    if (! $this->option('apply')) {
+        $this->info('Vista previa: no se modificaron datos.');
+
+        return self::SUCCESS;
+    }
+    $this->info('Ajustes guardados: '.$correction->apply($period));
+
+    return self::SUCCESS;
+})->purpose('Ajustes acotados del período 11: OFF, Kelvin, Elalf y Francisco.');
 
 Artisan::command('payroll:classify-october-bonuses {--period=10} {--apply : Reclasifica sin recalcular la planilla}', function (OctoberFirstHalfBonusClassificationService $service): int {
     $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
@@ -392,6 +447,11 @@ Artisan::command(
                     ], $plan['suspicious_entries']));
             }
             $this->line('Proyectos sin mapeo: '.count($plan['unmapped_projects']).'; empleados sin mapeo: '.count($plan['unmapped_employees']));
+            $this->line("Entradas externas excluidas explícitamente: {$plan['ignored_external_entries']}.");
+            $this->line("Entradas omitidas por exclusión empleado-día: {$plan['excluded_day_entries']}.");
+            foreach ($plan['special_project_coverage'] as $category => $count) {
+                $this->line("Proyecto especial {$category}: {$count} entradas.");
+            }
             $this->line('Activity/Insights: no expuesto por la API pública; no se infiere desde logged time.');
             if (! $this->option('dry-run')) {
                 $this->line("Entradas escritas: {$plan['written']}; empleados recalculados: {$plan['affected_employees']}.");

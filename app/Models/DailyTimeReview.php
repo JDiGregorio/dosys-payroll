@@ -177,7 +177,8 @@ class DailyTimeReview extends Model
         $period = $this->payrollPeriod;
         $employee = $this->employee;
         if (! $period || ! app(TrackabiActivityCoverageService::class)->applies($period)
-            || ! $employee || $employee->scheduleType?->code === 'rotativa') {
+            || ! $employee || ! $this->scheduled_work_day
+            || $employee->scheduleType?->code === 'rotativa') {
             return 0;
         }
 

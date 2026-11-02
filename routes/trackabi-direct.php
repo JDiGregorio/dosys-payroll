@@ -5,6 +5,7 @@ use App\Models\Employee;
 use App\Models\HubstaffTimeEntry;
 use App\Models\PayrollPeriod;
 use App\Models\TrackabiProjectMapping;
+use App\Services\OperationsFinalReviewService;
 use App\Services\TimeParserService;
 use App\Services\Trackabi\TrackabiDirectApiClient;
 use App\Services\Trackabi\TrackabiDirectApiException;
@@ -13,6 +14,10 @@ use App\Services\Trackabi\TrackabiDirectDiscovery;
 use App\Services\Trackabi\TrackabiDirectImportService;
 use App\Services\Trackabi\TrackabiDirectTimeEntryValidator;
 use App\Services\Trackabi\TrackabiInsightsCsvImportService;
+use App\Services\Trackabi\TrackabiInsightsDirectoryImportService;
+use App\Services\Trackabi\TrackabiPaidTimeComplianceService;
+use App\Services\Trackabi\TrackabiPayrollActivityAuditService;
+use App\Services\Trackabi\TrackabiDayExclusionService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 
@@ -98,7 +103,7 @@ Artisan::command('trackabi:sync-members {--dry-run : Vista previa sin escrituras
     return self::SUCCESS;
 })->purpose('Vista previa de miembros Trackabi; --apply enlaza solo correos únicos.');
 
-Artisan::command('trackabi:coverage {--period= : ID del período}', function (TrackabiCoverageReportService $coverage): int {
+Artisan::command('trackabi:coverage {--period= : ID del período}', function (TrackabiCoverageReportService $coverage, OperationsFinalReviewService $finalReview): int {
     $periodId = filter_var($this->option('period'), FILTER_VALIDATE_INT);
     $period = $periodId ? PayrollPeriod::query()->find($periodId) : null;
     if (! $period) {
@@ -126,6 +131,9 @@ Artisan::command('trackabi:coverage {--period= : ID del período}', function (Tr
     $this->line('Miembros Trackabi sin mapeo: '.count($report['unmatched_members']));
     $this->line("Revisiones diarias: {$report['daily_reviews']}; días programados: {$days['scheduled_work']}; OFF: {$days['scheduled_off']}");
     $this->line("Días con entradas Direct: {$days['with_time_entries']}; actividad disponible: {$days['activity_available']}; cero explícito: {$days['activity_zero']}; actividad faltante: {$days['activity_missing']}");
+    $pending = $finalReview->pendingReviews($period);
+    $this->line("Revisiones supervisor pendientes: {$pending}; completadas: ".($report['daily_reviews'] - $pending));
+    $this->line('Revisión final de Operaciones: '.($finalReview->isCurrent($period) ? 'vigente' : 'pendiente'));
     $this->line("Ausencias justificadas: {$days['justified_absence']}; ausencias no justificadas confirmadas: {$days['confirmed_unjustified_absence']}");
     $this->line("Días pagables equivalentes en {$report['payroll_results']} resultados existentes: {$report['payable_day_equivalents']} (provisionales si falta Insights)");
     foreach ($report['unmapped_projects'] as $project) {
@@ -137,6 +145,77 @@ Artisan::command('trackabi:coverage {--period= : ID del período}', function (Tr
 
     return self::SUCCESS;
 })->purpose('Reporte de cobertura Trackabi de solo lectura para un período abierto.');
+
+Artisan::command('trackabi:exclude-day {--period= : ID del período} {--employee= : ID del empleado} {--date= : Fecha YYYY-MM-DD} {--reason= : Motivo auditable} {--apply : Excluye las fuentes activas y recalcula solo ese empleado}', function (TrackabiDayExclusionService $service): int {
+    $period = PayrollPeriod::query()->find((int) $this->option('period'));
+    $employee = Employee::query()->find((int) $this->option('employee'));
+    $date = (string) $this->option('date');
+    $reason = trim((string) $this->option('reason'));
+    if (! $period || ! $employee || ! preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)
+        || ! Carbon::hasFormat($date, 'Y-m-d') || $reason === '') {
+        $this->error('Indica --period, --employee, --date=YYYY-MM-DD y --reason.');
+
+        return self::FAILURE;
+    }
+    $entries = HubstaffTimeEntry::query()->where('payroll_period_id', $period->id)
+        ->where('employee_id', $employee->id)->whereDate('date', $date)
+        ->where('source_provider', 'trackabi_api')->where('active', true)->count();
+    $activities = \App\Models\TrackabiDailyActivity::query()->where('payroll_period_id', $period->id)
+        ->where('employee_id', $employee->id)->whereDate('activity_date', $date)->count();
+    $this->line("{$employee->name} / {$date}: {$entries} entradas Direct activas; {$activities} filas Insights. Motivo: {$reason}");
+    if (! $this->option('apply')) {
+        $this->info('Vista previa; usa --apply para excluir.');
+
+        return self::SUCCESS;
+    }
+    try {
+        $service->apply($period, $employee, Carbon::parse($date), $reason);
+    } catch (Throwable $exception) {
+        $this->error($exception->getMessage());
+
+        return self::FAILURE;
+    }
+    $this->info('Fecha excluida. El raw Direct quedó inactivo y la fila Insights archivada; reimportar no la restaurará.');
+
+    return self::SUCCESS;
+})->purpose('Excluye un empleado-día de Trackabi sin perder evidencia y conserva la decisión en reimportaciones.');
+
+Artisan::command('trackabi:audit-payroll-activity {--period= : ID del período} {--detail : Muestra cada empleado y fecha} {--apply-alerts : Registra señales de revisión sin alterar payroll}', function (TrackabiPayrollActivityAuditService $service, TimeParserService $parser): int {
+    $period = PayrollPeriod::query()->find((int) $this->option('period'));
+    if (! $period) {
+        $this->error('Indica un período válido con --period=ID.');
+
+        return self::FAILURE;
+    }
+    try {
+        $report = $this->option('apply-alerts') ? $service->reconcileAlerts($period) : $service->report($period);
+    } catch (Throwable $exception) {
+        $this->error($exception->getMessage());
+
+        return self::FAILURE;
+    }
+    $this->line("Período #{$period->id}: ".count($report['rows']).' empleado-días auditados.');
+    $this->line("Actividad faltante: {$report['activity_missing']}; crédito total sin explicación: {$report['unexplained_full_credit']}; gap >28 min: {$report['gap_above_observed_range']}.");
+    $this->table(['Gap', 'Empleado-días'], array_map(
+        fn (string $label, int $count): array => [$label, $count],
+        array_keys($report['gap_distribution']), array_values($report['gap_distribution']),
+    ));
+    if ($this->option('detail')) {
+        $format = fn (?int $seconds): string => $seconds === null ? 'N/D' : $parser->secondsToHourMinute($seconds);
+        $this->table(['Empleado', 'Fecha', 'Regular', 'OT', 'Trackeable', 'Desktop', 'Gap', 'Justificado', 'Pérdida final', 'Logged', 'Fuente', 'Señal'],
+            array_map(fn (array $row): array => [
+                $row['employee'], $row['date'], $format($row['expected_regular_seconds']),
+                $format($row['approved_overtime_seconds']), $format($row['expected_trackable_seconds']),
+                $format($row['desktop_activity_seconds']), $format($row['raw_gap_seconds']),
+                $format($row['justified_seconds']), $format($row['final_lost_seconds']),
+                $format($row['logged_seconds']), $row['source'],
+                $row['unexplained_full_credit'] ? 'TRACKABI_UNEXPLAINED_FULL_CREDIT'
+                    : ($row['above_observed_range'] ? 'TRACKABI_ACTIVITY_GAP_ABOVE_OBSERVED_RANGE' : '-'),
+            ], $report['rows']));
+    }
+
+    return self::SUCCESS;
+})->purpose('Auditoría de actividad, gaps y crédito de payroll sin escrituras.');
 
 Artisan::command('trackabi:map-insights-member {name : Nombre exacto de la fila CSV} {--employee= : ID interno del empleado}', function (): int {
     $name = trim((string) $this->argument('name'));
@@ -163,6 +242,77 @@ Artisan::command('trackabi:map-insights-member {name : Nombre exacto de la fila 
 
     return self::SUCCESS;
 })->purpose('Mapea explícitamente un nombre exacto del CSV Insights a un empleado existente.');
+
+Artisan::command('trackabi:paid-time-coverage {--period= : ID del período} {--apply-alerts : Registra o resuelve alertas de cumplimiento}', function (TrackabiPaidTimeComplianceService $service, TimeParserService $parser): int {
+    $period = PayrollPeriod::query()->find((int) $this->option('period'));
+    if (! $period) {
+        $this->error('Indica un período válido con --period=ID.');
+
+        return self::FAILURE;
+    }
+    if ($this->option('apply-alerts') && ! in_array($period->status, ['borrador', 'importado', 'en_revision'], true)) {
+        $this->error('No se modifican alertas de períodos cerrados.');
+
+        return self::FAILURE;
+    }
+    $rows = $this->option('apply-alerts') ? $service->reconcile($period) : $service->inspect($period);
+    $this->table(['Empleado', 'Fecha', 'Campaña', 'Lunch esperado', 'Lunch marcado', 'Break esperado', 'Break marcado', 'Ocurrencias', 'Estado'],
+        array_map(fn (array $row): array => [
+            $row['employee'], $row['date'], $row['campaign'],
+            $parser->secondsToHourMinute($row['lunch_entitlement_seconds']),
+            $parser->secondsToHourMinute($row['lunch_tracked_seconds']),
+            $parser->secondsToHourMinute($row['break_entitlement_seconds']),
+            $parser->secondsToHourMinute($row['break_tracked_seconds']),
+            $row['break_tracked_occurrences'].'/'.$row['break_expected_occurrences'], $row['status'],
+        ], $rows));
+    $this->line('Empleado-días auditados: '.count($rows).'; con alertas: '.count(array_filter($rows, fn (array $row): bool => $row['alert_codes'] !== [])).'.');
+
+    return self::SUCCESS;
+})->purpose('Audita Lunch y breaks marcados sin alterar payroll.');
+
+Artisan::command('trackabi:import-insights-directory {directory : Directorio con un CSV oficial por fecha} {--period= : ID del período} {--dry-run : Vista previa sin escrituras} {--commit : Importa todos los CSV de forma transaccional}', function (TrackabiInsightsDirectoryImportService $service, TimeParserService $parser): int {
+    if ($this->option('dry-run') && $this->option('commit')) {
+        $this->error('Usa --dry-run o --commit, no ambos.');
+
+        return self::FAILURE;
+    }
+    $period = PayrollPeriod::query()->find((int) $this->option('period'));
+    if (! $period) {
+        $this->error('Indica un período válido con --period=ID.');
+
+        return self::FAILURE;
+    }
+    try {
+        $report = $this->option('commit')
+            ? $service->import($period, (string) $this->argument('directory'))
+            : $service->preview($period, (string) $this->argument('directory'));
+    } catch (Throwable $exception) {
+        $this->error($exception->getMessage());
+
+        return self::FAILURE;
+    }
+    $this->line('Archivos: '.count($report['files']).'; fechas: '.implode(', ', $report['dates']));
+    $this->line("Filas: {$report['rows']}; empleados-día mapeados: {$report['matched']}; sin mapeo: {$report['unmatched']}; filas excluidas explícitamente: {$report['ignored']}; errores: {$report['errors']}.");
+    $this->line('Productiva: '.$parser->secondsToHourMinuteSecond($report['productive_seconds'])
+        .'; improductiva: '.$parser->secondsToHourMinuteSecond($report['unproductive_seconds'])
+        .'; desktop: '.$parser->secondsToHourMinuteSecond($report['measured_seconds']));
+    $this->line("Actividad cero explícita: {$report['explicit_zero_rows']}; días programados sin CSV: {$report['missing_expected_employee_days']}; crear: {$report['would_insert']}; actualizar: {$report['would_update']}; omitir: {$report['would_skip']}; alertas tras revisión: {$report['would_alert_after_review']}.");
+    $this->line("Revisiones por crear: {$report['would_create_reviews']}; fechas faltantes: ".implode(', ', $report['missing_dates']));
+    foreach ($report['files'] as $file) {
+        foreach ($file['employees_unmatched'] as $row) {
+            $this->warn("{$file['date']} sin mapeo: {$row['member']}");
+        }
+        foreach ($file['errors'] as $error) {
+            $this->error("{$file['date']}: {$error}");
+        }
+    }
+    $this->line('SAFE TO IMPORT: '.($report['safe_to_import'] ? 'YES' : 'NO'));
+    if ($this->option('commit')) {
+        $this->info("Filas de actividad escritas: {$report['written']}.");
+    }
+
+    return $report['safe_to_import'] ? self::SUCCESS : self::FAILURE;
+})->purpose('Importa de forma segura un CSV Insights por fecha para todo un período.');
 
 Artisan::command('trackabi:import-insights {file : CSV oficial de Insights Staff Summary} {--date= : Fecha laboral YYYY-MM-DD} {--period= : ID del período; opcional si la fecha identifica uno solo} {--dry-run : Vista previa sin escrituras}', function (TrackabiInsightsCsvImportService $service, TimeParserService $parser): int {
     $date = (string) $this->option('date');
