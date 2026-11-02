@@ -217,6 +217,9 @@ class ClientWeeklyHoursReportService
             $warnings[] = $this->warning('CLIENT_REPORT_DATA_MISSING', $employee, $date, 'Campaña no configurada.');
         }
         foreach ($entries->pluck('trackabi_project_id')->filter()->unique() as $projectId) {
+            if (isset(config('trackabi_direct.special_projects', [])[(int) $projectId])) {
+                continue;
+            }
             $mappedCampaign = $mappings->get($projectId);
             if (! $mappedCampaign || (int) $mappedCampaign !== (int) $employee->campaign_id) {
                 $warnings[] = $this->warning('AMBIGUOUS_HISTORICAL_CAMPAIGN', $employee, $date, "Proyecto Trackabi #{$projectId} no coincide con la campaña actual.");

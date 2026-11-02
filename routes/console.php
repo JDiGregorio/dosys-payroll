@@ -31,6 +31,7 @@ use Illuminate\Support\Facades\DB;
 
 require __DIR__.'/trackabi-direct.php';
 require __DIR__.'/client-weekly-hours.php';
+require __DIR__.'/client-weekly-hours-current.php';
 
 Artisan::command('payroll:cap-marco-october-ot {--period=11} {--refresh-days : Recalcula solo el conteo de días de Marco sin cambiar importes} {--apply : Guarda el ajuste solicitado}', function (MarcoOctoberSecondHalfOvertimeCorrectionService $correction, TimeParserService $parser): int {
     $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
