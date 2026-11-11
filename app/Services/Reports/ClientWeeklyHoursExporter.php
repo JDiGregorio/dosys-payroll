@@ -11,6 +11,27 @@ use Illuminate\Support\Str;
 
 class ClientWeeklyHoursExporter
 {
+    public function exportSingleCampaign(array $report, string $directory, bool $draft): array
+    {
+        if (! $draft && ! $report['safe_to_send_client']) {
+            throw new \RuntimeException('El reporte tiene advertencias bloqueantes; solo puede exportarse con --draft.');
+        }
+        if (count($report['campaigns']) !== 1) {
+            throw new \InvalidArgumentException('Este método requiere exactamente una campaña.');
+        }
+        if (! is_dir($directory) && ! mkdir($directory, 0775, true) && ! is_dir($directory)) {
+            throw new \RuntimeException('No se pudo crear el directorio de reportes.');
+        }
+        $name = strtoupper(Str::slug($report['campaigns'][0]['name'], '_'));
+        $suffix = $draft ? '_DRAFT' : '';
+        $pdf = $directory.'/time_activity_report_'.$name.'_'.$report['from'].'_'.$report['to'].$suffix.'.pdf';
+        $xlsx = $directory.'/client_weekly_hours_'.$name.'_'.$report['from'].'_'.$report['to'].$suffix.'.xlsx';
+        $this->writePdf($report, $pdf);
+        $this->writeXlsx($report, $xlsx);
+
+        return ['pdf' => $pdf, 'xlsx' => $xlsx];
+    }
+
     public function export(array $report, string $directory, bool $draft): array
     {
         if (! $draft && ! $report['safe_to_send_client']) {
@@ -137,8 +158,9 @@ class ClientWeeklyHoursExporter
         $audit->setTitle('AUDIT');
         $audit->fromArray(['Week Start', 'Week End', 'Campaign', 'Employee', 'Date', 'Expected Regular',
             'Approved OT', 'Base Client Hours', 'Expected Trackable', 'Activity Source', 'Desktop Activity',
-            'Justified Time', 'Remaining Gap', 'Rule Applied', 'Client Billable Hours', 'Comment/Reason', 'Review Status'], null, 'A1');
-        $audit->getStyle('A1:Q1')->getFont()->setBold(true);
+            'Justified Time', 'Remaining Gap', 'Rule Applied', 'Client Billable Hours', 'Comment/Reason', 'Review Status',
+            'Original Billable Seconds'], null, 'A1');
+        $audit->getStyle('A1:R1')->getFont()->setBold(true);
         foreach ($report['days'] as $index => $day) {
             $line = $index + 2;
             $audit->fromArray([
@@ -148,13 +170,14 @@ class ClientWeeklyHoursExporter
                 $day['activity_source'], $day['desktop_activity_seconds'] === null ? null : $day['desktop_activity_seconds'] / 86400,
                 $day['justified_seconds'] / 86400, $day['remaining_gap_seconds'] / 86400,
                 $day['rule'], $day['billable_seconds'] / 86400, $day['comment'], $day['review_status'],
+                $day['raw_billable_seconds'] ?? $day['billable_seconds'],
             ], null, 'A'.$line);
             foreach (['F', 'G', 'H', 'I', 'K', 'L', 'M', 'O'] as $column) {
                 $audit->getStyle($column.$line)->getNumberFormat()->setFormatCode('[h]:mm');
             }
         }
         $audit->freezePane('F2');
-        $audit->setAutoFilter('A1:Q'.max(count($report['days']) + 1, 2));
+        $audit->setAutoFilter('A1:R'.max(count($report['days']) + 1, 2));
 
         $scheduleAudit = $book->createSheet();
         $scheduleAudit->setTitle('SCHEDULE_AUDIT');
