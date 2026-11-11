@@ -52,6 +52,7 @@ class TrackabiInsightsCsvImportService
             throw new RuntimeException('Este mismo CSV ya se usó para otra fecha; exporta el reporte del día correcto.');
         }
         $employees = Employee::query()->where('active', true)->get();
+        $inactiveEmployees = Employee::query()->where('active', false)->get();
         $excludedEmployeeIds = TrackabiDayExclusion::query()->where('payroll_period_id', $period->id)
             ->whereDate('date', $date)->pluck('employee_id')->map(fn ($id): int => (int) $id);
         $handle = fopen($path, 'rb');
@@ -121,6 +122,14 @@ class TrackabiInsightsCsvImportService
                     $employees, $memberId ? (int) $memberId : null, $email, $member,
                 );
                 if (! $employee) {
+                    $inactive = $this->identityResolver->resolve(
+                        $inactiveEmployees, $memberId ? (int) $memberId : null, $email, $member,
+                    );
+                    if ($inactive && $activity->measuredSeconds() === 0) {
+                        $ignored[] = ['row' => $rowNumber, 'member' => $member, 'reason' => 'inactive_zero_activity'];
+
+                        continue;
+                    }
                     if (in_array($member, config('trackabi_direct.insights_ignored_names', []), true)) {
                         $ignored[] = ['row' => $rowNumber, 'member' => $member];
 
