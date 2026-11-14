@@ -12,6 +12,7 @@ use App\Services\OctoberFirstHalfTimeCorrectionService;
 use App\Services\OctoberSecondHalfTimeCorrectionService;
 use App\Services\MarcoOctoberSecondHalfOvertimeCorrectionService;
 use App\Services\OctoberFirstHalfBonusClassificationService;
+use App\Services\NovemberFirstHalfPayrollAdjustmentsService;
 use App\Services\PayrollCalculationService;
 use App\Services\RotatingScheduleCorrectionService;
 use App\Services\SeptemberFirstHalfPayrollCorrectionsService;
@@ -30,6 +31,38 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 
 require __DIR__.'/trackabi-direct.php';
+
+Artisan::command('payroll:adjust-november-first-half {--period=12} {--apply : Guarda ajustes; sin esta opción solo muestra la vista previa}', function (NovemberFirstHalfPayrollAdjustmentsService $service): int {
+    try {
+        $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));
+        $preview = $service->preview($period);
+        $this->line('OFF: '.count($preview['off_days']).'; Marco: '.count($preview['marco'])
+            .'; Denisha: '.count($preview['denisha']['work']).' jornadas y '.count($preview['denisha']['off']).' OFF.');
+        $this->table(['Empleado', 'Fecha', 'Acción'], [
+            ...array_map(fn (array $day): array => [$day[0], $day[1], 'OFF / excluir Trackabi'], $preview['off_days']),
+            ...array_map(fn (string $date, int $hours): array => ['Marco Lara', $date, "{$hours}:00 supervisadas"],
+                array_keys($preview['marco']), array_values($preview['marco'])),
+            ...array_map(fn (string $date, int $hours): array => ['Denisha Buckley', $date, "{$hours}:00 supervisadas / día completo sin OT"],
+                array_keys($preview['denisha']['work']), array_values($preview['denisha']['work'])),
+            ...array_map(fn (string $date): array => ['Denisha Buckley', $date, 'OFF pagado'], $preview['denisha']['off']),
+        ]);
+        $this->line("Reclasificación: {$preview['lunch_deductions']} almuerzos, {$preview['rap_deductions']} RAP, {$preview['marketing_bonuses']} bonos Marketing.");
+        if (! $this->option('apply')) {
+            $this->info('Vista previa; no se modificaron datos.');
+
+            return self::SUCCESS;
+        }
+        foreach ($service->apply($period) as $label => $count) {
+            $this->line("{$label}: {$count}");
+        }
+
+        return self::SUCCESS;
+    } catch (\Throwable $exception) {
+        $this->error($exception->getMessage());
+
+        return self::FAILURE;
+    }
+})->purpose('Ajustes auditables del período 12 sin sobrescribir revisiones ajenas.');
 
 Artisan::command('payroll:cap-marco-october-ot {--period=11} {--refresh-days : Recalcula solo el conteo de días de Marco sin cambiar importes} {--apply : Guarda el ajuste solicitado}', function (MarcoOctoberSecondHalfOvertimeCorrectionService $correction, TimeParserService $parser): int {
     $period = PayrollPeriod::query()->findOrFail((int) $this->option('period'));

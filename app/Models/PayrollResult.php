@@ -47,6 +47,7 @@ class PayrollResult extends Model
             'ihss_amount' => 'decimal:2',
             'isr_amount' => 'decimal:2',
             'rap_amount' => 'decimal:2',
+            'lunch_deduction_amount' => 'decimal:2',
             'vouchers_amount' => 'decimal:2',
             'tier_adjustment_deduction_amount' => 'decimal:2',
             'other_deductions_amount' => 'decimal:2',

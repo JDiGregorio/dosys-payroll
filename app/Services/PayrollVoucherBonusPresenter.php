@@ -23,6 +23,7 @@ class PayrollVoucherBonusPresenter
             foreach (app(BonusApplicationService::class)->approvedBonusesForEmployee($period, $employee) as $bonus) {
                 $label = match ($bonus->type) {
                     'client_extra' => 'Bono Extra Cliente',
+                    'marketing' => 'Bono de Marketing',
                     'other' => trim((string) $bonus->description) ?: 'Otro bono',
                     'manual' => trim((string) $bonus->description) ?: 'Bono manual',
                     default => null,
@@ -50,27 +51,30 @@ class PayrollVoucherBonusPresenter
 
         $lunchCents = 0;
         $holidayCents = 0;
+        $marketingCents = 0;
 
         foreach (app(BonusApplicationService::class)->approvedBonusesForEmployee($period, $employee) as $bonus) {
-            if (! in_array($bonus->type, ['manual', 'other'], true)) {
+            if (! in_array($bonus->type, ['manual', 'other', 'marketing'], true)) {
                 continue;
             }
 
             $amountCents = (int) round((float) $bonus->amount * 100);
 
-            if ($bonus->description === 'September 15th - Lunch Bonus') {
+            if ($bonus->type === 'marketing') {
+                $marketingCents += $amountCents;
+            } elseif ($bonus->description === 'September 15th - Lunch Bonus') {
                 $lunchCents += $amountCents;
             } elseif ($bonus->description === 'Holiday September 15, Independence Day') {
                 $holidayCents += $amountCents;
             }
         }
 
-        if ($lunchCents + $holidayCents > $totalCents) {
+        if ($lunchCents + $holidayCents + $marketingCents > $totalCents) {
             return $defaultRows;
         }
 
         $rows = [];
-        $clientCents = $totalCents - $lunchCents - $holidayCents;
+        $clientCents = $totalCents - $lunchCents - $holidayCents - $marketingCents;
 
         if ($clientCents || (! $lunchCents && ! $holidayCents)) {
             $rows[] = ['Bonos extra cliente', (float) ($clientCents / 100), true];
@@ -82,6 +86,10 @@ class PayrollVoucherBonusPresenter
 
         if ($holidayCents) {
             $rows[] = ['Pago adicional por feriado trabajado (15 de septiembre)', (float) ($holidayCents / 100), true];
+        }
+
+        if ($marketingCents) {
+            $rows[] = ['Bono de Marketing', (float) ($marketingCents / 100), true];
         }
 
         return $rows;

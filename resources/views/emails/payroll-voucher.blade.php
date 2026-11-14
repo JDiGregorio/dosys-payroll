@@ -40,6 +40,8 @@
     $deductionRows = [
         ['PAN AME Seguro', $result->private_insurance_amount, true],
         ['IHSS', $result->ihss_amount, true],
+        ['RAP', $result->rap_amount, (float) $result->rap_amount !== 0.0],
+        ['Almuerzo', $result->lunch_deduction_amount, (float) $result->lunch_deduction_amount !== 0.0],
         ['Ajuste Cambio de Tier', $result->tier_adjustment_deduction_amount, true],
         ['Otras deducciones', $result->other_deductions_amount, (float) $result->other_deductions_amount !== 0.0],
     ];

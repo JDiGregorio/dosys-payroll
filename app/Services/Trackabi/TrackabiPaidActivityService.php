@@ -20,6 +20,13 @@ class TrackabiPaidActivityService
         return $expected > 0 ? min($expected, $credited) : $credited;
     }
 
+    public function displayedReviewedSeconds(DailyTimeReview $review): ?int
+    {
+        $credited = $this->creditedMeasuredSeconds($review);
+
+        return $credited === null ? null : max($credited - max((int) $review->supervisor_adjustment_seconds, 0), 0);
+    }
+
     public function allowanceSeconds(DailyTimeReview $review, int $measuredSeconds): int
     {
         if ($measuredSeconds <= 0 || $review->paid_day_off || ! $review->employee

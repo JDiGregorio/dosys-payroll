@@ -144,6 +144,8 @@ class DeductionApplicationService
             ->where('code', match ($deduction->type) {
                 'ihss' => 'ihss',
                 'private_insurance' => 'private_insurance',
+                'lunch' => 'lunch',
+                'rap' => 'rap',
                 default => 'additional',
             })
             ->first();

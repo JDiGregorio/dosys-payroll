@@ -349,7 +349,9 @@
                                 $insidePeriod = $this->isInsidePeriod($day);
                                 $hasHubstaff = (int) ($review?->hubstaff_total_seconds ?? 0) > 0;
                                 $activity = $directPeriod ? $review?->trackabiActivity : null;
-                                $hasActivity = (int) ($activity?->measured_activity_seconds ?? 0) > 0;
+                                $hasActivity = (int) ($activity?->measured_activity_seconds ?? 0) > 0
+                                    || ($review?->verified_tracked_source === 'period_12_supervised_training'
+                                        && (int) $review->verified_tracked_seconds > 0);
                                 $isOff = (bool) ($review?->paid_day_off ?? false);
                                 $isJustifiedAbsence = $review && ! $hasHubstaff && ! $hasActivity && (int) $review->justified_absence_seconds >= (int) $review->expected_seconds && (int) $review->expected_seconds > 0;
                                 $isCorrectPending = $this->isCorrectPendingReview($review);
@@ -406,7 +408,7 @@
                                             @php
                                                 $trackabiTimer = $review->hasTrackabiTimer();
                                                 $displayTracked = $directPeriod
-                                                    ? app(\App\Services\Trackabi\TrackabiPaidActivityService::class)->creditedMeasuredSeconds($review)
+                                                    ? app(\App\Services\Trackabi\TrackabiPaidActivityService::class)->displayedReviewedSeconds($review)
                                                     : ($trackabiTimer
                                                         ? ($review->verified_tracked_seconds ?? $review->computableTrackedSeconds())
                                                         : $review->hubstaff_total_seconds);
@@ -420,7 +422,7 @@
                                             </div>
                                             @if ($directPeriod)
                                             <div class="dr-event-row">
-                                                <span>Trackabi</span>
+                                                <span>{{ $review->verified_tracked_source === 'period_12_supervised_training' ? 'Supervisión' : 'Trackabi' }}</span>
                                                 <strong>{{ $displayTracked !== null ? $this->hours($displayTracked).' h' : 'N/D' }}</strong>
                                             </div>
                                             @endif
