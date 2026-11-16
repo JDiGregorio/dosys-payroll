@@ -23,6 +23,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
         'tier_adjustment' => 'Ajuste Cambio de Tier',
         'vacation' => 'Vacaciones',
         'internet_subsidy' => 'Subsidio por internet',
+        'marketing' => 'Bono de Marketing',
     ];
 
     private const BONUS_FIELDS = [
@@ -33,6 +34,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
         'tier_adjustment' => 'tier_adjustment_bonus_amount',
         'vacation' => 'vacation_bonus_amount',
         'internet_subsidy' => 'internet_subsidy_amount',
+        'marketing' => null,
     ];
 
     private ?Collection $bonusTypes = null;
@@ -125,7 +127,9 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
         ];
 
         foreach ($this->bonusTypes() as $type) {
-            $values[] = $row->{self::BONUS_FIELDS[$type]} ?? 0;
+            $values[] = $type === 'marketing'
+                ? app(\App\Services\BonusApplicationService::class)->amountByType($this->period, $employee, ['marketing'])
+                : ($row->{self::BONUS_FIELDS[$type]} ?? 0);
         }
 
         $values[] = $row->gross_amount;
@@ -180,7 +184,7 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
 
         return $this->hasClassifiedExtraBonuses ??= PayrollBonus::query()
             ->where('payroll_period_id', $this->period->id)
-            ->whereIn('type', ['client_extra', 'other'])
+            ->whereIn('type', ['client_extra', 'other', 'marketing'])
             ->exists();
     }
 
@@ -192,6 +196,8 @@ class PayrollResultsExport implements FromQuery, ShouldAutoSize, WithHeadings, W
         foreach ($rows as [$label, $amount]) {
             if (in_array($label, ['Bono Extra Cliente', 'Bonos extra cliente'], true)) {
                 $client += $amount;
+            } elseif ($label === 'Bono de Marketing') {
+                continue;
             } else {
                 $other[] = $label.': L '.number_format($amount, 2);
             }

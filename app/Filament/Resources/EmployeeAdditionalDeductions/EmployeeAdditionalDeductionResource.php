@@ -115,6 +115,8 @@ class EmployeeAdditionalDeductionResource extends Resource
             'adjustment' => 'Ajuste',
             'ihss' => 'IHSS',
             'private_insurance' => 'PAN AME Seguro',
+            'lunch' => 'Almuerzo',
+            'rap' => 'RAP',
             'other' => 'Otro',
         ];
     }

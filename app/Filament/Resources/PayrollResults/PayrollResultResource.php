@@ -198,6 +198,10 @@ class PayrollResultResource extends Resource
                     ->alignRight(),
                 TextColumn::make('lost_time_amount')->label('Impacto tiempo perdido')->money('HNL', locale: 'en-US'),
                 TextColumn::make('extra_bonuses_amount')->label('Bonos extras')->money('HNL', locale: 'en-US'),
+                TextColumn::make('marketing_bonus_amount')->label('Bono de Marketing')
+                    ->state(fn (PayrollResult $record): float => app(\App\Services\BonusApplicationService::class)
+                        ->amountByType($record->payrollPeriod, $record->employee, ['marketing']))
+                    ->money('HNL', locale: 'en-US')->toggleable(),
                 TextColumn::make('bonus_breakdown')->label('Detalle de bonos')
                     ->state(fn (PayrollResult $record): string => collect(app(PayrollVoucherBonusPresenter::class)->extraBonusRows($record))
                         ->map(fn (array $row): string => $row[0].': L '.number_format($row[1], 2))
@@ -214,6 +218,8 @@ class PayrollResultResource extends Resource
                 TextColumn::make('gross_amount')->label('Total devengado')->money('HNL', locale: 'en-US')->sortable(),
                 TextColumn::make('private_insurance_amount')->label('PAN AME Seguro')->money('HNL', locale: 'en-US')->toggleable(),
                 TextColumn::make('ihss_amount')->label('IHSS')->money('HNL', locale: 'en-US')->toggleable(),
+                TextColumn::make('rap_amount')->label('RAP')->money('HNL', locale: 'en-US')->toggleable(),
+                TextColumn::make('lunch_deduction_amount')->label('Almuerzo')->money('HNL', locale: 'en-US')->toggleable(),
                 TextColumn::make('tier_adjustment_deduction_amount')->label('Ajuste Cambio de Tier deducción')->money('HNL', locale: 'en-US')->toggleable(),
                 TextColumn::make('other_deductions_amount')->label('Otras deducciones')->money('HNL', locale: 'en-US')->toggleable(),
                 TextColumn::make('total_deductions_amount')->label('Total deducciones')->money('HNL', locale: 'en-US')->sortable(),

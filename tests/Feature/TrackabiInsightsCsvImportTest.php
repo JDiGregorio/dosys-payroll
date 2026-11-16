@@ -92,6 +92,30 @@ class TrackabiInsightsCsvImportTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_inactive_employee_with_zero_activity_is_ignored_but_positive_activity_requires_review(): void
+    {
+        Employee::query()->create([
+            'name' => 'Former Agent', 'trackabi_name' => 'Williams, Shone',
+            'campaign_id' => $this->employee->campaign_id, 'active' => false,
+        ]);
+        $zero = $this->csv("\"Aguilar, Dereck\",08:00,08:00,06:00,01:00\n"
+            ."\"Williams, Shone\",00:00,00:00,00:00,00:00\n");
+        $preview = app(TrackabiInsightsCsvImportService::class)->preview(
+            $this->period, Carbon::parse('2026-10-09'), $zero,
+        );
+        $this->assertSame(1, $preview['employees_matched']);
+        $this->assertSame([], $preview['employees_unmatched']);
+        $this->assertSame('inactive_zero_activity', $preview['ignored_rows'][0]['reason']);
+
+        $positive = $this->csv("\"Williams, Shone\",01:00,01:00,00:30,00:30\n", 'positive-inactive.csv');
+        $preview = app(TrackabiInsightsCsvImportService::class)->preview(
+            $this->period, Carbon::parse('2026-10-09'), $positive,
+        );
+        $this->assertCount(1, $preview['employees_unmatched']);
+        $this->assertSame([], $preview['ignored_rows']);
+        $this->assertDatabaseCount('trackabi_daily_activities', 0);
+    }
+
     public function test_measured_gap_is_not_completed_by_logged_time_and_justification_returns_only_its_credit(): void
     {
         $review = $this->review();

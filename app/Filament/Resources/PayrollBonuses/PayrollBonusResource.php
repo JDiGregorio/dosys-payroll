@@ -161,6 +161,7 @@ class PayrollBonusResource extends Resource
             'productivity' => 'Bono de Productividad',
             'time_management' => 'Bono TM',
             'client_extra' => 'Bono Extra Cliente',
+            'marketing' => 'Bono de Marketing',
             'referred' => 'Bono referido',
             'adjustment' => 'Ajuste Cambio de Tier',
             'vacation' => 'Vacaciones',

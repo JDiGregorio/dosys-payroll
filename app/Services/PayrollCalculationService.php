@@ -179,18 +179,28 @@ class PayrollCalculationService
         $referredBonus = $this->bonusService->amountByType($period, $employee, ['referred']);
         $tierAdjustmentBonus = $this->bonusService->amountByType($period, $employee, ['adjustment', 'tier_adjustment']);
         $vacationBonus = $this->bonusService->amountByType($period, $employee, ['vacation']);
-        $extraBonuses = $this->bonusService->amountByType($period, $employee, ['manual', 'other', 'client_extra']);
+        $extraBonuses = $this->bonusService->amountByType($period, $employee, ['manual', 'other', 'client_extra', 'marketing']);
         $internetSubsidy = ($employee->location === 'remote' ? (float) $employee->internet_subsidy_amount : 0.0)
             + $this->bonusService->amountByType($period, $employee, ['internet_subsidy']);
         $payrollCompensation = 0.0;
         $extrasTotal = round($overtimeAmount + $internetSubsidy + $qaBonus + $productivityBonus + $timeManagementBonus + $extraBonuses + $referredBonus + $tierAdjustmentBonus + $vacationBonus + $payrollCompensation + $offWorkedExtraAmount, 2);
         $workedDays = $this->workedDays($reviews);
+        if (app(NovemberFirstHalfPayrollAdjustmentsService::class)->isDenishaPeriod($period, $employee)) {
+            $workedDays = app(NovemberFirstHalfPayrollAdjustmentsService::class)->paidDenishaDays($reviews);
+        }
         $scheduledDays = (float) $reviews->where('scheduled_work_day', true)->count();
         $extraCalendarDays = $this->extraStandardBiweeklyCalendarDays($period);
         $fixedSalaryBase = $biweeklySalary + ($extraCalendarDays * $dailyRate);
         $regularLostSeconds = (int) $reviews->sum(
             fn (DailyTimeReview $review): int => $this->regularUnjustifiedSeconds($review),
         );
+        if (app(NovemberFirstHalfPayrollAdjustmentsService::class)->isDenishaPeriod($period, $employee)) {
+            $workedDays -= (float) $reviews->sum(fn (DailyTimeReview $review): float =>
+                $review->scheduled_work_day && (int) $review->expected_ordinary_seconds > 0
+                    ? min($this->regularUnjustifiedSeconds($review) / (int) $review->expected_ordinary_seconds, 1)
+                    : 0,
+            );
+        }
         $idleLostSeconds = 0;
         $overtimeLostSeconds = 0;
         $directFixedSalary = $salaryCalculationMethod === 'semi_monthly_fixed_with_deductions'
@@ -234,6 +244,7 @@ class PayrollCalculationService
         $ihss = $deductionAmountByCode('ihss');
         $isr = $deductionAmountByCode('isr');
         $rap = $deductionAmountByCode('rap');
+        $lunch = $deductionAmountByCode('lunch');
         $vouchers = $deductionAmountByCode('vouchers');
         $tierAdjustmentDeduction = (float) $deductions
             ->filter(fn ($deduction): bool => $deduction->deductionType?->code === 'additional'
@@ -304,6 +315,7 @@ class PayrollCalculationService
             'ihss_amount' => round($ihss, 2),
             'isr_amount' => round($isr, 2),
             'rap_amount' => round($rap, 2),
+            'lunch_deduction_amount' => round($lunch, 2),
             'vouchers_amount' => round($vouchers, 2),
             'tier_adjustment_deduction_amount' => round($tierAdjustmentDeduction, 2),
             'other_deductions_amount' => round($otherDeductions, 2),
@@ -507,6 +519,9 @@ class PayrollCalculationService
 
     private function effectiveSalaryCalculationMethod(PayrollPeriod $period, Employee $employee): string
     {
+        if (app(NovemberFirstHalfPayrollAdjustmentsService::class)->isDenishaPeriod($period, $employee)) {
+            return 'monthly_calendar_prorated';
+        }
         if ($employee->paid_without_tracking) {
             return 'semi_monthly_fixed_with_deductions';
         }
@@ -620,6 +635,16 @@ class PayrollCalculationService
         $payableOvertimeSeconds = $review->assigned_overtime_fulfilled
             ? $creditedSeconds
             : max($creditedSeconds - (int) $review->expected_ordinary_seconds, 0);
+
+        if (! $review->assigned_overtime_fulfilled
+            && $review->employee && $review->payrollPeriod
+            && $review->payrollPeriod->starts_at->toDateString() >= '2026-10-26'
+            && app(TrackabiActivityCoverageService::class)->applies($review->payrollPeriod)
+            && ! $this->isRotatingSchedule($review->employee)
+            && ($this->preassignedWeeklySeconds($review->employee) > 0
+                || $this->preassignedPeriodSeconds($review->employee) > 0)) {
+            $payableOvertimeSeconds = $this->roundAuthorizedOvertimeSeconds($payableOvertimeSeconds);
+        }
 
         return min(
             (int) $review->preassigned_overtime_seconds,
@@ -774,7 +799,8 @@ class PayrollCalculationService
             return false;
         }
         if ($review->employee && $review->payrollPeriod
-            && app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee)
+            && (app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee)
+                || app(NovemberFirstHalfPayrollAdjustmentsService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee))
             && $review->date->isWeekend()) {
             return false;
         }
@@ -834,7 +860,8 @@ class PayrollCalculationService
             if ($review->expected_ordinary_seconds <= 0) {
                 if ($review->employee && $review->payrollPeriod
                     && (app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee)
-                        || app(MarcoOctoberSecondHalfOvertimeCorrectionService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee))
+                        || app(MarcoOctoberSecondHalfOvertimeCorrectionService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee)
+                        || app(NovemberFirstHalfPayrollAdjustmentsService::class)->isMarcoPeriod($review->payrollPeriod, $review->employee))
                     && (int) $review->possible_overtime_seconds > 0) {
                     return 1.0;
                 }
@@ -867,7 +894,8 @@ class PayrollCalculationService
         $reviews->each(fn (DailyTimeReview $review) => $this->applyScheduleExpectation($review, $employee));
 
         if (app(SeptemberSecondHalfTimeCorrectionService::class)->isMarcoPeriod($period, $employee)
-            || app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($period, $employee)) {
+            || app(OctoberFirstHalfTimeCorrectionService::class)->isMarcoPeriod($period, $employee)
+            || app(NovemberFirstHalfPayrollAdjustmentsService::class)->isMarcoPeriod($period, $employee)) {
             $this->redistributeMarcoWeekendOvertime($period, $employee, $reviews);
 
             return;
@@ -1062,7 +1090,7 @@ class PayrollCalculationService
         $paidNonTrackable = ($policy['lunch_minutes'] + $policy['break_minutes']) * 60;
 
         $reviews->groupBy(fn (DailyTimeReview $review): string => $this->weekKey($review->date))
-            ->each(function (Collection $weekReviews, string $weekKey) use ($weeklyAssigned, $paidOutside, $employee, $paidNonTrackable): void {
+            ->each(function (Collection $weekReviews, string $weekKey) use ($weeklyAssigned, $paidOutside, $employee, $paidNonTrackable, $period): void {
                 $remaining = max($weeklyAssigned - (int) $paidOutside->get($weekKey, 0), 0);
                 $ordered = $weekReviews->sort(function (DailyTimeReview $left, DailyTimeReview $right): int {
                     if ($left->date->isWeekend() !== $right->date->isWeekend()) {
@@ -1079,6 +1107,9 @@ class PayrollCalculationService
                         : 0;
                     $available = $review->paid_day_off || $measured === null
                         ? 0 : max((int) $measured - $regularTrackable, 0);
+                    if ($period->starts_at->toDateString() >= '2026-10-26') {
+                        $available = $this->roundAuthorizedOvertimeSeconds($available);
+                    }
                     $review->preassigned_overtime_seconds = min($available, $remaining);
                     $remaining -= (int) $review->preassigned_overtime_seconds;
                 }
@@ -1098,6 +1129,13 @@ class PayrollCalculationService
     private function weekKey(Carbon $date): string
     {
         return $date->copy()->startOfWeek()->toDateString();
+    }
+
+    private function roundAuthorizedOvertimeSeconds(int $seconds): int
+    {
+        $seconds = max($seconds, 0);
+
+        return intdiv($seconds, 3600) * 3600 + ($seconds % 3600 >= 1800 ? 3600 : 0);
     }
 
     private function syncEmployeeDailyReviews(
@@ -1271,6 +1309,7 @@ class PayrollCalculationService
         app(OctoberFirstHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
         app(OctoberSecondHalfTimeCorrectionService::class)->adjustExpectation($review, $employee);
         app(MarcoOctoberSecondHalfOvertimeCorrectionService::class)->adjustExpectation($review, $employee);
+        app(NovemberFirstHalfPayrollAdjustmentsService::class)->adjustExpectation($review, $employee);
     }
 
     private function isRotatingSchedule(Employee $employee): bool

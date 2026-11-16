@@ -112,8 +112,8 @@ class DailyTimeReviewResource extends Resource
                             TextInput::make('direct_required_hours')->label('Total horas esperadas diarias')->disabled()->dehydrated(false)
                                 ->visible(fn (?DailyTimeReview $record): bool => self::hasHubstaffTime($record))
                                 ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds((int) $record?->expected_paid_seconds))),
-                            TextInput::make('direct_trackabi_hours')->label('Total Hora Trackabi')->disabled()->dehydrated(false)
-                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds($record ? (app(TrackabiPaidActivityService::class)->creditedMeasuredSeconds($record) ?? 0) : 0))),
+                            TextInput::make('direct_trackabi_hours')->label(fn (?DailyTimeReview $record): string => $record?->verified_tracked_source === 'period_12_supervised_training' ? 'Horas supervisadas' : 'Total Hora Trackabi')->disabled()->dehydrated(false)
+                                ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds($record ? (app(TrackabiPaidActivityService::class)->displayedReviewedSeconds($record) ?? 0) : 0))),
                             TextInput::make('direct_pending_hours')->label('Tiempo pendiente de revisión')->disabled()->dehydrated(false)
                                 ->visible(fn (?DailyTimeReview $record): bool => self::hasHubstaffTime($record))
                                 ->afterStateHydrated(fn (TextInput $component, ?DailyTimeReview $record) => $component->state(self::formatSeconds($record?->finalEstimatedLostSeconds() ?? 0))),
@@ -462,7 +462,9 @@ class DailyTimeReviewResource extends Resource
     private static function hasHubstaffTime(?DailyTimeReview $record): bool
     {
         return (int) ($record?->hubstaff_total_seconds ?? 0) > 0
-            || (int) ($record?->trackabiActivity?->measured_activity_seconds ?? 0) > 0;
+            || (int) ($record?->trackabiActivity?->measured_activity_seconds ?? 0) > 0
+            || ($record?->verified_tracked_source === 'period_12_supervised_training'
+                && (int) $record->verified_tracked_seconds > 0);
     }
 
     private static function canMarkOffWorked(?DailyTimeReview $record): bool
