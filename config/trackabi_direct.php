@@ -18,7 +18,7 @@ return [
         81119 => 'paid_break_15',
         81120 => 'paid_lunch',
     ],
-    'insights_ignored_names' => ['Delcid, David', 'Rodas, Rocio', 'GARCIA, JONATHAN'],
+    'insights_ignored_names' => ['Delcid, David', 'Rodas, Rocio', 'GARCIA, JONATHAN', 'Ramirez, Orely'],
     'direct_ignored_member_ids' => [63936], // David Delcid: no payroll employee.
     'insights_paid_lunch_minutes' => (int) env('TRACKABI_INSIGHTS_PAID_LUNCH_MINUTES', 60),
     'insights_paid_break_minutes' => (int) env('TRACKABI_INSIGHTS_PAID_BREAK_MINUTES', 15),

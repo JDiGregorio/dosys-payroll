@@ -307,6 +307,10 @@ class ClientWeeklyHoursReportService
             'non_billable' => $nonBillable,
             'non_billable_rule' => $reason,
         ]);
+        if ($review->verified_tracked_source === 'period_12_supervised_training' && ! $nonBillable && $activity !== null) {
+            $calculated['billable_seconds'] = min($activity, $ordinary);
+            $calculated['rule'] = 'SUPERVISED_TRAINING_HOURS';
+        }
         if ($offWorked && $calculated['billable_seconds'] > 0) {
             $calculated['rule'] = 'WEEKEND_OVERTIME';
         } elseif ($ordinary === 0 && $overtime > 0 && $calculated['billable_seconds'] > 0) {

@@ -99,6 +99,32 @@ class ClientWeeklyHoursReportTest extends TestCase
         $this->assertSame($before, $review->fresh()->getAttributes());
     }
 
+    public function test_supervised_training_is_billed_at_verified_hours_without_changing_payroll(): void
+    {
+        $period = PayrollPeriod::query()->create([
+            'name' => 'Nov 2026', 'starts_at' => '2026-10-26', 'ends_at' => '2026-11-10', 'status' => 'en_revision',
+        ]);
+        $campaign = Campaign::query()->create(['name' => 'PALMETTO']);
+        $employee = Employee::query()->create([
+            'name' => 'Training Agent', 'campaign_id' => $campaign->id,
+            'active' => true, 'daily_hours' => 11, 'ordinary_weekly_hours' => 44,
+        ]);
+        PayrollResult::query()->create(['payroll_period_id' => $period->id, 'employee_id' => $employee->id]);
+        $review = DailyTimeReview::query()->create([
+            'payroll_period_id' => $period->id, 'employee_id' => $employee->id,
+            'date' => '2026-11-02', 'status' => 'revisado_supervisor',
+            'expected_ordinary_seconds' => 11 * 3600, 'expected_hubstaff_seconds' => 11 * 3600,
+            'payable_seconds' => 11 * 3600, 'verified_tracked_seconds' => 8 * 3600,
+            'verified_tracked_source' => 'period_12_supervised_training',
+        ]);
+
+        $report = app(ClientWeeklyHoursReportService::class)->build('2026-11-02', '2026-11-02');
+
+        $this->assertSame(8 * 3600, $report['days'][0]['billable_seconds']);
+        $this->assertSame('SUPERVISED_TRAINING_HOURS', $report['days'][0]['rule']);
+        $this->assertSame(11 * 3600, (int) $review->fresh()->payable_seconds);
+    }
+
     public function test_final_export_is_blocked_and_draft_writes_both_formats(): void
     {
         $report = [

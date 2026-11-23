@@ -39,7 +39,7 @@ class ClientWeeklyHoursCurrentPeriodService
             ->keyBy('id');
         $recentReviews = DailyTimeReview::query()->where('payroll_period_id', $period->id)
             ->whereBetween('date', ['2026-10-12', '2026-10-25'])->get()->groupBy('employee_id');
-        $activity = $this->readCsvWeek($csvDirectory, $employees, $report['warnings']);
+        $activity = $this->readCsvRange($csvDirectory, $employees, '2026-10-26', '2026-11-01', $report['warnings']);
         $weekStart = Carbon::parse('2026-10-26');
         $weekEnd = Carbon::parse('2026-11-01');
         $projectedDays = [];
@@ -187,10 +187,10 @@ class ClientWeeklyHoursCurrentPeriodService
         return $report;
     }
 
-    private function readCsvWeek(string $directory, Collection $employees, array &$warnings): array
+    public function readCsvRange(string $directory, Collection $employees, string $from, string $to, array &$warnings): array
     {
         $activity = [];
-        foreach (CarbonPeriod::create('2026-10-26', '2026-11-01') as $date) {
+        foreach (CarbonPeriod::create($from, $to) as $date) {
             $day = $date->toDateString();
             $path = rtrim($directory, '/').'/'.$day.'-'.$day.'-insights.csv';
             if (! is_readable($path)) {
